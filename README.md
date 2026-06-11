@@ -118,6 +118,28 @@ beans balances          # everything, grouped by type
 beans report trial      # the accountant's sanity check
 ```
 
+### Recurring transactions
+
+Bills, paychecks, subscriptions — define them once and post them on demand:
+
+```sh
+beans recur add rent --freq monthly --start 2026-07-01 \
+    --post Expenses:Housing:Rent 1800 --post Assets:Checking
+beans recur add paycheck --freq biweekly --start 2026-07-03 \
+    --desc "Salary deposit" --post Assets:Checking 2500 --post Income:Salary
+
+beans recur list            # shows which rules are due
+beans recur run --dry-run   # preview everything due through today
+beans recur run             # post it (idempotent — run as often as you like)
+beans recur run --to 2026-12-31   # post ahead, e.g. for planning
+```
+
+Frequencies: `daily`, `weekly`, `biweekly`, `monthly`, `quarterly`,
+`yearly`. Monthly-style rules anchor to the start date's day-of-month and
+clamp to short months (a rule started Jan 31 posts Feb 28, then Mar 31).
+Rules can have an `--end` date, be `pause`d/`resume`d, and `remove`d —
+already-posted transactions always stay in the ledger, tagged `recurring`.
+
 ### Periods
 
 Reports accept `--period` with: `ytd`, `all`, `this-month`, `last-month`,

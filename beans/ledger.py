@@ -14,9 +14,11 @@ from pathlib import Path
 
 from beans.models import (
     CASHFLOW_CATEGORIES,
+    RECURRENCE_FREQUENCIES,
     Account,
     AccountType,
     Posting,
+    Recurring,
     Transaction,
 )
 from beans.utils import BeansError, format_amount
@@ -61,6 +63,26 @@ CREATE TABLE IF NOT EXISTS budgets (
     amount     INTEGER NOT NULL,
     period     TEXT NOT NULL DEFAULT 'monthly' CHECK (period IN
                ('weekly','monthly','quarterly','yearly'))
+);
+CREATE TABLE IF NOT EXISTS recurring (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    description TEXT NOT NULL DEFAULT '',
+    payee       TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL DEFAULT '',
+    frequency   TEXT NOT NULL CHECK (frequency IN
+                ('daily','weekly','biweekly','monthly','quarterly','yearly')),
+    start_date  TEXT NOT NULL,
+    end_date    TEXT,
+    occurrences INTEGER NOT NULL DEFAULT 0,
+    active      INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS recurring_postings (
+    id           INTEGER PRIMARY KEY,
+    recurring_id INTEGER NOT NULL REFERENCES recurring(id)
+                 ON DELETE CASCADE,
+    account_id   INTEGER NOT NULL REFERENCES accounts(id),
+    amount       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_postings_txn ON postings(txn_id);
 CREATE INDEX IF NOT EXISTS idx_postings_account ON postings(account_id);
@@ -302,14 +324,7 @@ class Ledger:
 
     # -- transactions ------------------------------------------------------
 
-    def add_transaction(
-        self,
-        when: date,
-        description: str,
-        postings: list[Posting],
-        payee: str = "",
-        tags: list[str] | None = None,
-    ) -> Transaction:
+    def _check_postings(self, postings: list[Posting]) -> None:
         if len(postings) < 2:
             raise BeansError("a transaction needs at least two postings")
         total = sum(p.amount for p in postings)
@@ -321,26 +336,50 @@ class Ledger:
             )
         if any(p.amount == 0 for p in postings):
             raise BeansError("postings must have a non-zero amount")
+
+    def _insert_transaction(
+        self,
+        when: date,
+        description: str,
+        postings: list[Posting],
+        payee: str,
+        tags: list[str],
+    ) -> int:
+        """INSERT a transaction and its postings; the caller owns the
+        surrounding database transaction."""
+        cur = self.db.execute(
+            "INSERT INTO transactions "
+            "(date, description, payee, tags, created) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                when.isoformat(),
+                description,
+                payee,
+                ",".join(tags),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        txn_id = cur.lastrowid
+        self.db.executemany(
+            "INSERT INTO postings (txn_id, account_id, amount) "
+            "VALUES (?, ?, ?)",
+            [(txn_id, p.account_id, p.amount) for p in postings],
+        )
+        return txn_id
+
+    def add_transaction(
+        self,
+        when: date,
+        description: str,
+        postings: list[Posting],
+        payee: str = "",
+        tags: list[str] | None = None,
+    ) -> Transaction:
+        self._check_postings(postings)
         tags = tags or []
         with self.db:
-            cur = self.db.execute(
-                "INSERT INTO transactions "
-                "(date, description, payee, tags, created) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    when.isoformat(),
-                    description,
-                    payee,
-                    ",".join(tags),
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
-            )
-            txn_id = cur.lastrowid
-            self.db.executemany(
-                "INSERT INTO postings (txn_id, account_id, amount) "
-                "VALUES (?, ?, ?)",
-                [(txn_id, p.account_id, p.amount) for p in postings],
-            )
+            txn_id = self._insert_transaction(when, description, postings,
+                                              payee, tags)
         return Transaction(txn_id, when, description, payee, tags,
                            False, postings)
 
@@ -512,3 +551,143 @@ class Ledger:
             )
         if cur.rowcount == 0:
             raise BeansError(f"no budget set for {account.name}")
+
+    # -- recurring transactions ----------------------------------------------
+
+    def add_recurring(
+        self,
+        name: str,
+        frequency: str,
+        start: date,
+        postings: list[Posting],
+        end: date | None = None,
+        description: str = "",
+        payee: str = "",
+        tags: list[str] | None = None,
+    ) -> Recurring:
+        name = name.strip()
+        if not name:
+            raise BeansError("a recurring rule needs a name")
+        if frequency not in RECURRENCE_FREQUENCIES:
+            raise BeansError(
+                f"invalid frequency {frequency!r} (expected one of "
+                f"{', '.join(RECURRENCE_FREQUENCIES)})"
+            )
+        if end and end < start:
+            raise BeansError("end date is before start date")
+        self._check_postings(postings)
+        tags = tags or []
+        try:
+            with self.db:
+                cur = self.db.execute(
+                    "INSERT INTO recurring "
+                    "(name, description, payee, tags, frequency, "
+                    "start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (name, description, payee, ",".join(tags), frequency,
+                     start.isoformat(), end.isoformat() if end else None),
+                )
+                rec_id = cur.lastrowid
+                self.db.executemany(
+                    "INSERT INTO recurring_postings "
+                    "(recurring_id, account_id, amount) VALUES (?, ?, ?)",
+                    [(rec_id, p.account_id, p.amount) for p in postings],
+                )
+        except sqlite3.IntegrityError:
+            raise BeansError(f"recurring rule {name!r} already exists")
+        return self.get_recurring(rec_id)
+
+    def _build_recurring(self, row: sqlite3.Row) -> Recurring:
+        postings = [
+            Posting(
+                id=p["id"],
+                account_id=p["account_id"],
+                amount=p["amount"],
+                account_name=p["name"],
+            )
+            for p in self.db.execute(
+                "SELECT p.*, a.name FROM recurring_postings p "
+                "JOIN accounts a ON a.id = p.account_id "
+                "WHERE p.recurring_id = ? ORDER BY p.id",
+                (row["id"],),
+            )
+        ]
+        return Recurring(
+            id=row["id"],
+            name=row["name"],
+            frequency=row["frequency"],
+            start_date=date.fromisoformat(row["start_date"]),
+            end_date=(date.fromisoformat(row["end_date"])
+                      if row["end_date"] else None),
+            occurrences=row["occurrences"],
+            active=bool(row["active"]),
+            description=row["description"],
+            payee=row["payee"],
+            tags=[t for t in row["tags"].split(",") if t],
+            postings=postings,
+        )
+
+    def get_recurring(self, rec_id: int) -> Recurring:
+        row = self.db.execute(
+            "SELECT * FROM recurring WHERE id = ?", (rec_id,)
+        ).fetchone()
+        if not row:
+            raise BeansError(f"no recurring rule with id {rec_id}")
+        return self._build_recurring(row)
+
+    def recurrings(self) -> list[Recurring]:
+        rows = self.db.execute(
+            "SELECT * FROM recurring ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        return [self._build_recurring(r) for r in rows]
+
+    def find_recurring(self, query: str) -> Recurring:
+        query = query.strip()
+        row = self.db.execute(
+            "SELECT * FROM recurring WHERE name = ? COLLATE NOCASE", (query,)
+        ).fetchone()
+        if row:
+            return self._build_recurring(row)
+        candidates = self.recurrings()
+        q = query.lower()
+        sub = [r for r in candidates if q in r.name.lower()]
+        if len(sub) == 1:
+            return sub[0]
+        if sub:
+            names = ", ".join(r.name for r in sub[:6])
+            raise BeansError(f"recurring rule {query!r} is ambiguous: {names}")
+        raise BeansError(
+            f"no recurring rule matches {query!r} (see `beans recur list`)"
+        )
+
+    def set_recurring_active(self, rec: Recurring, active: bool) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE recurring SET active = ? WHERE id = ?",
+                (int(active), rec.id),
+            )
+        rec.active = active
+
+    def post_recurring_instance(self, rec: Recurring, due: date) -> Transaction:
+        """Post one instance of a rule and advance its occurrence counter
+        in a single database transaction, so an interrupted run can never
+        repost an instance that already committed."""
+        postings = [Posting(account_id=p.account_id, amount=p.amount)
+                    for p in rec.postings]
+        self._check_postings(postings)
+        tags = rec.tags + ["recurring"]
+        description = rec.description or rec.name
+        with self.db:
+            txn_id = self._insert_transaction(due, description, postings,
+                                              rec.payee, tags)
+            self.db.execute(
+                "UPDATE recurring SET occurrences = occurrences + 1 "
+                "WHERE id = ?",
+                (rec.id,),
+            )
+        rec.occurrences += 1
+        return Transaction(txn_id, due, description, rec.payee, tags,
+                           False, postings)
+
+    def remove_recurring(self, rec: Recurring) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM recurring WHERE id = ?", (rec.id,))

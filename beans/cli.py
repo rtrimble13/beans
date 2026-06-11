@@ -8,10 +8,10 @@ import sys
 from datetime import date
 
 from beans import __version__
-from beans import analysis, budget, forecast, reports
+from beans import analysis, budget, forecast, recurring, reports
 from beans.importer import import_csv
 from beans.ledger import Ledger, ledger_path
-from beans.models import AccountType, Posting
+from beans.models import RECURRENCE_FREQUENCIES, AccountType, Posting
 from beans.render import Table, bold, money
 from beans.utils import (
     BeansError,
@@ -186,13 +186,13 @@ def cmd_account_modify(args) -> int:
     return 0
 
 
-def cmd_tx_add(args) -> int:
-    led = _open(args)
-    when = parse_date(args.date, default=date.today())
+def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
+    """Turn --post [ACCOUNT, AMOUNT?] specs into balanced postings; one
+    spec may omit its amount to become the balancing leg."""
     postings: list[Posting] = []
     balancing: Posting | None = None
     total = 0
-    for spec in args.post:
+    for spec in specs:
         if len(spec) > 2:
             raise BeansError(
                 f"--post takes an account and an optional amount, got: "
@@ -216,6 +216,13 @@ def cmd_tx_add(args) -> int:
                                     account_name=account.name))
     if balancing is not None:
         balancing.amount = -total
+    return postings
+
+
+def cmd_tx_add(args) -> int:
+    led = _open(args)
+    when = parse_date(args.date, default=date.today())
+    postings = _parse_postings(led, args.post)
     txn = led.add_transaction(when, args.desc, postings,
                               payee=args.payee, tags=args.tag)
     txn = led.get_transaction(txn.id)
@@ -349,6 +356,69 @@ def cmd_report_trial(args) -> int:
     as_of = parse_date(args.date, default=date.today())
     data = reports.trial_balance(led, as_of)
     _emit(args, led, data, reports.render_trial_balance)
+    return 0
+
+
+def cmd_recur_add(args) -> int:
+    led = _open(args)
+    start = parse_date(args.start, default=date.today())
+    end = parse_date(args.end) if args.end else None
+    postings = _parse_postings(led, args.post)
+    rec = led.add_recurring(
+        args.name, args.freq, start, postings, end=end,
+        description=args.desc or "", payee=args.payee, tags=args.tag,
+    )
+    due = recurring.next_due(rec)
+    print(f"Added recurring rule {rec.name!r} ({rec.frequency}, "
+          f"first due {due.isoformat()})")
+    print("Post due instances with `beans recur run`.")
+    return 0
+
+
+def cmd_recur_list(args) -> int:
+    led = _open(args)
+    data = recurring.list_rules(led, date.today())
+    _emit(args, led, data, recurring.render_list)
+    return 0
+
+
+def cmd_recur_show(args) -> int:
+    led = _open(args)
+    rec = led.find_recurring(args.name)
+    print(recurring.render_rule(rec, led.decimals))
+    return 0
+
+
+def cmd_recur_run(args) -> int:
+    led = _open(args)
+    as_of = parse_date(args.to_date, default=date.today())
+    data = recurring.run_due(led, as_of, dry_run=args.dry_run)
+    _emit(args, led, data, recurring.render_run)
+    return 0
+
+
+def cmd_recur_pause(args) -> int:
+    led = _open(args)
+    rec = led.find_recurring(args.name)
+    led.set_recurring_active(rec, False)
+    print(f"Paused recurring rule {rec.name!r}")
+    return 0
+
+
+def cmd_recur_resume(args) -> int:
+    led = _open(args)
+    rec = led.find_recurring(args.name)
+    led.set_recurring_active(rec, True)
+    print(f"Resumed recurring rule {rec.name!r}")
+    return 0
+
+
+def cmd_recur_remove(args) -> int:
+    led = _open(args)
+    rec = led.find_recurring(args.name)
+    led.remove_recurring(rec)
+    print(f"Removed recurring rule {rec.name!r} "
+          f"(already-posted transactions are kept)")
     return 0
 
 
@@ -658,6 +728,55 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--date", "-d", help="as-of date (default: today)")
     _add_json_arg(p)
     p.set_defaults(func=cmd_report_trial)
+
+    # recur
+    p_recur = sub.add_parser("recur",
+                             help="recurring/scheduled transactions")
+    recur_sub = p_recur.add_subparsers(dest="subcommand",
+                                       metavar="subcommand")
+    p = recur_sub.add_parser(
+        "add", help="define a recurring rule",
+        epilog="Example: beans recur add rent --freq monthly "
+               "--start 2026-07-01 --post Expenses:Housing:Rent 1800 "
+               "--post Assets:Checking",
+    )
+    p.add_argument("name", help="unique rule name, e.g. rent")
+    p.add_argument("--freq", "-F", required=True,
+                   choices=list(RECURRENCE_FREQUENCIES),
+                   help="how often the transaction repeats")
+    p.add_argument("--start", help="first occurrence (default: today)")
+    p.add_argument("--end", help="last possible occurrence (optional)")
+    p.add_argument("--desc", "-m", help="description (default: rule name)")
+    p.add_argument("--payee", default="")
+    p.add_argument("--tag", action="append", default=[],
+                   help="tag (repeatable; instances also get 'recurring')")
+    p.add_argument("--post", nargs="+", action="append", required=True,
+                   metavar=("ACCOUNT [AMOUNT]", ""),
+                   help="posting template, same syntax as `beans tx add`")
+    p.set_defaults(func=cmd_recur_add)
+    p = recur_sub.add_parser("list", help="list rules with due status")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_recur_list)
+    p = recur_sub.add_parser("show", help="show one rule in detail")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_recur_show)
+    p = recur_sub.add_parser("run",
+                             help="post all occurrences due through a date")
+    p.add_argument("--to", dest="to_date", metavar="DATE",
+                   help="post everything due through DATE (default: today)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="preview without writing")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_recur_run)
+    p = recur_sub.add_parser("pause", help="suspend a rule")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_recur_pause)
+    p = recur_sub.add_parser("resume", help="reactivate a paused rule")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_recur_resume)
+    p = recur_sub.add_parser("remove", help="delete a rule (keeps history)")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_recur_remove)
 
     p = sub.add_parser("networth", help="month-end net worth trend")
     p.add_argument("--months", "-n", type=int, default=12,
