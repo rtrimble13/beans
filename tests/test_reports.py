@@ -130,6 +130,19 @@ def test_analysis(led):
     assert data["top_expenses"][0]["account"] == "Expenses:Housing:Rent"
 
 
+def test_net_worth_trend(led):
+    seed(led)
+    data = reports.net_worth_trend(led, 3, end=date(2026, 3, 31))
+    assert [r["month"] for r in data["rows"]] == [
+        "2026-01", "2026-02", "2026-03"]
+    jan, feb, mar = data["rows"]
+    assert jan["net_worth"] == 880000  # opening 380k + paycheck 500k
+    assert feb["net_worth"] == 670000  # rent -180k, groceries on card -30k
+    assert feb["change"] == -210000
+    assert mar["net_worth"] == 670000
+    assert mar["change"] == 0
+
+
 def test_jsonify_converts_money(led):
     seed(led)
     data = reports.balance_sheet(led, date(2026, 12, 31))

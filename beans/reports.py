@@ -14,7 +14,7 @@ from decimal import Decimal
 from beans.ledger import Ledger
 from beans.models import AccountType
 from beans.render import Table, bold, money, rollup, strip_shared_root
-from beans.utils import prior_period
+from beans.utils import add_months, month_bounds, prior_period
 
 
 def to_major(minor: int, decimals: int) -> str:
@@ -22,16 +22,23 @@ def to_major(minor: int, decimals: int) -> str:
         Decimal(1).scaleb(-decimals) if decimals else Decimal(1)))
 
 
+# Report-dict keys whose integer values are counts, not money.
+NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months"}
+
+
 def jsonify(value, decimals: int):
     """Convert a report dict for JSON output: every int is money in minor
-    units and becomes a major-unit decimal string."""
+    units and becomes a major-unit decimal string (except known counts)."""
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
         return to_major(value, decimals)
     if isinstance(value, dict):
-        return {k: v if k == "id" else jsonify(v, decimals)
-                for k, v in value.items()}
+        return {
+            k: v if k in NON_MONEY_KEYS and isinstance(v, (bool, int))
+            else jsonify(v, decimals)
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [jsonify(v, decimals) for v in value]
     if isinstance(value, date):
@@ -340,6 +347,62 @@ def render_balances(data: dict, decimals: int, symbol: str) -> str:
                   money(sum(amounts.values()), decimals, symbol))
         table.add("", "")
     lines.append(table.render())
+    return "\n".join(lines)
+
+
+# -- net worth trend ---------------------------------------------------------
+
+
+def net_worth_trend(led: Ledger, months: int, end: date | None = None) -> dict:
+    """Month-end assets, liabilities, and net worth for the last `months`
+    months — the household equivalent of a book-value trend."""
+    end = end or date.today()
+    accounts = {a.id: a for a in led.accounts(include_closed=True)}
+    rows = []
+    prev_net = None
+    this_month_start = month_bounds(end.year, end.month)[0]
+    for i in range(months - 1, -1, -1):
+        m_start = add_months(this_month_start, -i)
+        m_end = month_bounds(m_start.year, m_start.month)[1]
+        as_of = min(m_end, end)
+        raw = led.balances(as_of=as_of)
+        assets = sum(v for k, v in raw.items()
+                     if k in accounts
+                     and accounts[k].type is AccountType.ASSET)
+        liabilities = -sum(v for k, v in raw.items()
+                           if k in accounts
+                           and accounts[k].type is AccountType.LIABILITY)
+        net = assets - liabilities
+        rows.append({
+            "month": f"{m_start:%Y-%m}",
+            "as_of": as_of,
+            "assets": assets,
+            "liabilities": liabilities,
+            "net_worth": net,
+            "change": (net - prev_net) if prev_net is not None else 0,
+        })
+        prev_net = net
+    return {"report": "net_worth_trend", "months": months, "rows": rows}
+
+
+def render_net_worth_trend(data: dict, decimals: int, symbol: str) -> str:
+    lines = [bold("NET WORTH TREND"),
+             f"Last {data['months']} months (month-end balances)", ""]
+    table = Table(headers=["Month", "Assets", "Liabilities", "Net Worth",
+                           "Change"], align="lrrrr")
+    for row in data["rows"]:
+        table.add(row["month"],
+                  money(row["assets"], decimals),
+                  money(row["liabilities"], decimals),
+                  money(row["net_worth"], decimals),
+                  money(row["change"], decimals))
+    lines.append(table.render())
+    if data["rows"]:
+        first, last = data["rows"][0], data["rows"][-1]
+        total_change = last["net_worth"] - first["net_worth"]
+        lines.append("")
+        lines.append(f"Change over period: "
+                     f"{money(total_change, decimals, symbol)}")
     return "\n".join(lines)
 
 

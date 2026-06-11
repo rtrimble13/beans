@@ -347,6 +347,15 @@ def cmd_report_trial(args) -> int:
     return 0
 
 
+def cmd_networth(args) -> int:
+    led = _open(args)
+    if args.months < 1:
+        raise BeansError("--months must be at least 1")
+    data = reports.net_worth_trend(led, args.months)
+    _emit(args, led, data, reports.render_net_worth_trend)
+    return 0
+
+
 def cmd_budget_set(args) -> int:
     led = _open(args)
     account = led.find_account(args.account)
@@ -644,6 +653,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--date", "-d", help="as-of date (default: today)")
     _add_json_arg(p)
     p.set_defaults(func=cmd_report_trial)
+
+    p = sub.add_parser("networth", help="month-end net worth trend")
+    p.add_argument("--months", "-n", type=int, default=12,
+                   help="months of history (default: 12)")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_networth)
 
     # budget
     p_budget = sub.add_parser("budget", help="budgets and variance reports")

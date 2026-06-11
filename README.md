@@ -179,6 +179,7 @@ with a breakdown of which accounts drive the projection and from what basis
 
 ```sh
 beans analyze --period ytd
+beans networth --months 12     # month-end net worth trend with deltas
 ```
 
 Reports the ratios you would compute for a company, adapted to a household:

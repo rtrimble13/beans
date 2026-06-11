@@ -173,6 +173,18 @@ def test_analyze_runs(capsys, ledger_file):
     assert data["savings_rate_pct"] == 60.0
 
 
+def test_networth(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Checking", "5000",
+        "--post", "Equity:Opening Balances")
+    code, out, _ = run(capsys, ledger_file, "networth", "--months", "2",
+                       "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert len(data["rows"]) == 2
+    assert data["rows"][-1]["net_worth"] == "5000.00"
+
+
 def test_config(capsys, ledger_file):
     code, _, _ = run(capsys, ledger_file, "config", "set",
                      "default_account", "Savings")
