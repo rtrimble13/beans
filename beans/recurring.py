@@ -15,7 +15,7 @@ import calendar
 from datetime import date, timedelta
 
 from beans.ledger import Ledger
-from beans.models import Posting, Recurring
+from beans.models import Recurring
 from beans.render import Table, bold, money
 from beans.utils import BeansError
 
@@ -58,14 +58,19 @@ def next_due(rec: Recurring) -> date | None:
 
 
 def run_due(led: Ledger, as_of: date, dry_run: bool = False) -> dict:
-    """Post every active rule's occurrences due through as_of."""
+    """Post every active rule's occurrences due through as_of.
+
+    Each instance is posted atomically together with the rule's
+    occurrence-counter bump, so an interrupted run resumes exactly where
+    it stopped instead of reposting committed instances.
+    """
     posted = []
     for rec in led.recurrings():
         if not rec.active:
             continue
         count = rec.occurrences
-        while True:
-            if count - rec.occurrences >= MAX_RUN_PER_RULE:
+        for step in range(MAX_RUN_PER_RULE + 1):
+            if step == MAX_RUN_PER_RULE:
                 raise BeansError(
                     f"recurring rule {rec.name!r} generated more than "
                     f"{MAX_RUN_PER_RULE} instances in one run — check its "
@@ -76,14 +81,7 @@ def run_due(led: Ledger, as_of: date, dry_run: bool = False) -> dict:
                 break
             txn_id = None
             if not dry_run:
-                txn = led.add_transaction(
-                    due,
-                    rec.description or rec.name,
-                    [Posting(account_id=p.account_id, amount=p.amount)
-                     for p in rec.postings],
-                    payee=rec.payee,
-                    tags=rec.tags + ["recurring"],
-                )
+                txn = led.post_recurring_instance(rec, due)
                 txn_id = txn.id
             posted.append({
                 "id": txn_id,
@@ -93,8 +91,6 @@ def run_due(led: Ledger, as_of: date, dry_run: bool = False) -> dict:
                 "amount": sum(p.amount for p in rec.postings if p.amount > 0),
             })
             count += 1
-        if count != rec.occurrences and not dry_run:
-            led.set_recurring_occurrences(rec, count)
     return {
         "report": "recurring_run",
         "as_of": as_of,

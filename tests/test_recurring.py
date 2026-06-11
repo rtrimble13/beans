@@ -99,6 +99,34 @@ def test_run_due_dry_run_writes_nothing(led):
     assert led.find_recurring("rent").occurrences == 0
 
 
+def test_interrupted_run_resumes_without_duplicates(led, monkeypatch):
+    from beans.ledger import Ledger
+
+    make_rule(led, start=date(2026, 1, 1))
+    original = Ledger._insert_transaction
+    calls = {"n": 0}
+
+    def flaky(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Ledger, "_insert_transaction", flaky)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_due(led, date(2026, 3, 15))
+    monkeypatch.undo()
+
+    # The first instance committed atomically with its counter bump...
+    assert len(led.transactions()) == 1
+    assert led.find_recurring("rent").occurrences == 1
+    # ...so resuming posts only the remaining two, with no duplicates.
+    data = run_due(led, date(2026, 3, 15))
+    assert [r["date"] for r in data["posted"]] == [
+        date(2026, 2, 1), date(2026, 3, 1)]
+    assert len(led.transactions()) == 3
+
+
 def test_paused_rule_skipped(led):
     rec = make_rule(led, start=date(2026, 1, 1))
     led.set_recurring_active(rec, False)

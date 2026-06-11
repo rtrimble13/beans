@@ -337,6 +337,36 @@ class Ledger:
         if any(p.amount == 0 for p in postings):
             raise BeansError("postings must have a non-zero amount")
 
+    def _insert_transaction(
+        self,
+        when: date,
+        description: str,
+        postings: list[Posting],
+        payee: str,
+        tags: list[str],
+    ) -> int:
+        """INSERT a transaction and its postings; the caller owns the
+        surrounding database transaction."""
+        cur = self.db.execute(
+            "INSERT INTO transactions "
+            "(date, description, payee, tags, created) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                when.isoformat(),
+                description,
+                payee,
+                ",".join(tags),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        txn_id = cur.lastrowid
+        self.db.executemany(
+            "INSERT INTO postings (txn_id, account_id, amount) "
+            "VALUES (?, ?, ?)",
+            [(txn_id, p.account_id, p.amount) for p in postings],
+        )
+        return txn_id
+
     def add_transaction(
         self,
         when: date,
@@ -348,24 +378,8 @@ class Ledger:
         self._check_postings(postings)
         tags = tags or []
         with self.db:
-            cur = self.db.execute(
-                "INSERT INTO transactions "
-                "(date, description, payee, tags, created) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    when.isoformat(),
-                    description,
-                    payee,
-                    ",".join(tags),
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
-            )
-            txn_id = cur.lastrowid
-            self.db.executemany(
-                "INSERT INTO postings (txn_id, account_id, amount) "
-                "VALUES (?, ?, ?)",
-                [(txn_id, p.account_id, p.amount) for p in postings],
-            )
+            txn_id = self._insert_transaction(when, description, postings,
+                                              payee, tags)
         return Transaction(txn_id, when, description, payee, tags,
                            False, postings)
 
@@ -653,13 +667,26 @@ class Ledger:
             )
         rec.active = active
 
-    def set_recurring_occurrences(self, rec: Recurring, count: int) -> None:
+    def post_recurring_instance(self, rec: Recurring, due: date) -> Transaction:
+        """Post one instance of a rule and advance its occurrence counter
+        in a single database transaction, so an interrupted run can never
+        repost an instance that already committed."""
+        postings = [Posting(account_id=p.account_id, amount=p.amount)
+                    for p in rec.postings]
+        self._check_postings(postings)
+        tags = rec.tags + ["recurring"]
+        description = rec.description or rec.name
         with self.db:
+            txn_id = self._insert_transaction(due, description, postings,
+                                              rec.payee, tags)
             self.db.execute(
-                "UPDATE recurring SET occurrences = ? WHERE id = ?",
-                (count, rec.id),
+                "UPDATE recurring SET occurrences = occurrences + 1 "
+                "WHERE id = ?",
+                (rec.id,),
             )
-        rec.occurrences = count
+        rec.occurrences += 1
+        return Transaction(txn_id, due, description, rec.payee, tags,
+                           False, postings)
 
     def remove_recurring(self, rec: Recurring) -> None:
         with self.db:
