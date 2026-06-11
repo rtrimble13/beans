@@ -30,14 +30,32 @@ def currency_symbol(code: str) -> str:
     return CURRENCY_SYMBOLS.get(code.upper(), code.upper() + " ")
 
 
+# Currency codes and symbols recognized by parse_amount, longest first so
+# multi-character symbols (C$, CHF) win over their substrings ($).
+_CURRENCY_TOKENS = sorted(
+    {*CURRENCY_SYMBOLS} | {s.strip() for s in CURRENCY_SYMBOLS.values()},
+    key=len,
+    reverse=True,
+)
+_CURRENCY_RE = "|".join(re.escape(t) for t in _CURRENCY_TOKENS)
+
+
 def parse_amount(text: str, decimals: int = 2) -> int:
     """Parse a money string into integer minor units (e.g. cents).
 
-    Accepts optional commas, currency symbols, and a leading sign.
+    Accepts optional commas/spaces, a leading sign, and a known currency
+    code or symbol ("$5", "C$10", "CHF 10", "EUR 5.50", "$-5").
     """
-    cleaned = re.sub(r"[,$€£¥₹\s]", "", str(text))
+    cleaned = re.sub(r"[,\s]", "", str(text))
+    sign = ""
+    if cleaned[:1] in "+-":
+        sign, cleaned = cleaned[0], cleaned[1:]
+    cleaned = re.sub(rf"^(?:{_CURRENCY_RE})|(?:{_CURRENCY_RE})$", "",
+                     cleaned, flags=re.IGNORECASE)
+    if not sign and cleaned[:1] in "+-":
+        sign, cleaned = cleaned[0], cleaned[1:]
     try:
-        value = Decimal(cleaned)
+        value = Decimal(sign + cleaned)
     except InvalidOperation:
         raise BeansError(f"invalid amount: {text!r}")
     scaled = value.scaleb(decimals)

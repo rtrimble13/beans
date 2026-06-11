@@ -19,8 +19,16 @@ def test_parse_amount():
     assert parse_amount("-1,234.56") == -123456
     assert parse_amount("$600") == 60000
     assert parse_amount("100", decimals=0) == 100
+    # Multi-character symbols and codes, as emitted by currency_symbol().
+    assert parse_amount("C$10") == 1000
+    assert parse_amount("-A$3") == -300
+    assert parse_amount("CHF 10") == 1000
+    assert parse_amount("EUR 5.50") == 550
+    assert parse_amount("$-5") == -500
     with pytest.raises(BeansError, match="invalid amount"):
         parse_amount("abc")
+    with pytest.raises(BeansError, match="invalid amount"):
+        parse_amount("XYZ10")
     with pytest.raises(BeansError, match="decimal places"):
         parse_amount("1.234")
 

@@ -29,7 +29,12 @@ PROG = "beans"
 
 
 def _open(args, create: bool = False) -> Ledger:
-    return Ledger(ledger_path(args.file), create=create)
+    """Open (or reuse) the ledger for this invocation; main() closes it."""
+    led = getattr(args, "_ledger", None)
+    if led is None:
+        led = Ledger(ledger_path(args.file), create=create)
+        args._ledger = led
+    return led
 
 
 def _symbol(led: Ledger) -> str:
@@ -91,7 +96,7 @@ def _txn_to_dict(led: Ledger, txn) -> dict:
 
 def cmd_init(args) -> int:
     path = ledger_path(args.file)
-    led = Ledger(path, create=True)
+    led = _open(args, create=True)
     led.initialize(currency=args.currency, with_chart=not args.bare)
     print(f"Initialized ledger at {path} (currency: {led.currency})")
     if not args.bare:
@@ -743,6 +748,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except BrokenPipeError:
         return 0
+    finally:
+        led = getattr(args, "_ledger", None)
+        if led is not None:
+            led.close()
 
 
 if __name__ == "__main__":

@@ -86,6 +86,16 @@ def test_duplicate_account_rejected(led):
         led.add_account("Assets:Checking", AccountType.ASSET)
 
 
+def test_update_account_validation(led):
+    checking = led.find_account("Assets:Checking")
+    with pytest.raises(BeansError, match="invalid cash-flow category"):
+        led.update_account(checking, cf_category="bogus")
+    with pytest.raises(BeansError, match="invalid account name"):
+        led.update_account(checking, name=":bad")
+    with pytest.raises(BeansError, match="already exists"):
+        led.update_account(checking, name="Assets:Savings")
+
+
 def test_cash_flag_only_on_assets(led):
     with pytest.raises(BeansError, match="only asset accounts"):
         led.add_account("Income:Weird", AccountType.INCOME, is_cash=True)

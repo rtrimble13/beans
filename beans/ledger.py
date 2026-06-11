@@ -259,6 +259,16 @@ class Ledger:
 
     def update_account(self, account: Account, **fields) -> None:
         allowed = {"name", "is_cash", "cf_category", "closed", "description"}
+        if "name" in fields:
+            name = fields["name"] = str(fields["name"]).strip()
+            if not name or name.startswith(":") or name.endswith(":"):
+                raise BeansError(f"invalid account name: {name!r}")
+        cf = fields.get("cf_category")
+        if cf is not None and cf not in CASHFLOW_CATEGORIES:
+            raise BeansError(
+                f"invalid cash-flow category {cf!r} "
+                f"(expected one of {', '.join(CASHFLOW_CATEGORIES)})"
+            )
         sets, params = [], []
         for key, value in fields.items():
             if key not in allowed:
@@ -274,8 +284,12 @@ class Ledger:
                     f"UPDATE accounts SET {', '.join(sets)} WHERE id = ?",
                     params,
                 )
-        except sqlite3.IntegrityError:
-            raise BeansError(f"account {fields.get('name')!r} already exists")
+        except sqlite3.IntegrityError as exc:
+            if "name" in fields:
+                raise BeansError(
+                    f"account {fields['name']!r} already exists"
+                )
+            raise BeansError(f"could not update {account.name}: {exc}")
 
     def close_account(self, account: Account) -> None:
         balance = self.balances(as_of=None).get(account.id, 0)
