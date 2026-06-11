@@ -72,6 +72,7 @@ class Posting:
     amount: int  # minor units, debit-positive
     id: int | None = None
     account_name: str = ""
+    cleared: bool = False  # confirmed against a bank statement
 
 
 @dataclass

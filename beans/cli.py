@@ -8,11 +8,22 @@ import sys
 from datetime import date
 
 from beans import __version__
-from beans import analysis, budget, forecast, recurring, reports
+from beans import (
+    analysis,
+    budget,
+    completions,
+    forecast,
+    goals,
+    invest,
+    reconcile,
+    recurring,
+    reports,
+    status,
+)
 from beans.importer import import_csv
-from beans.ledger import Ledger, ledger_path
+from beans.ledger import BUDGET_PERIOD_MONTHS, Ledger, ledger_path
 from beans.models import RECURRENCE_FREQUENCIES, AccountType, Posting
-from beans.render import Table, bold, money
+from beans.render import Table, bold, money, red
 from beans.utils import (
     BeansError,
     currency_symbol,
@@ -130,6 +141,10 @@ def cmd_account_list(args) -> int:
     led = _open(args)
     type_ = AccountType(args.type) if args.type else None
     accounts = led.accounts(type_=type_, include_closed=args.all)
+    if args.names:
+        for a in accounts:
+            print(a.name)
+        return 0
     raw = led.balances()
     if args.json:
         print(json.dumps([
@@ -222,9 +237,24 @@ def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
 def cmd_tx_add(args) -> int:
     led = _open(args)
     when = parse_date(args.date, default=date.today())
-    postings = _parse_postings(led, args.post)
-    txn = led.add_transaction(when, args.desc, postings,
-                              payee=args.payee, tags=args.tag)
+    if args.like is not None:
+        template = led.get_transaction(args.like)
+        postings = [Posting(account_id=p.account_id, amount=p.amount,
+                            account_name=p.account_name)
+                    for p in template.postings]
+        if args.post:
+            raise BeansError("--like and --post are mutually exclusive")
+        desc = args.desc or template.description
+        payee = args.payee or template.payee
+        tags = args.tag or template.tags
+    else:
+        if not args.post:
+            raise BeansError("either --post or --like is required")
+        if not args.desc:
+            raise BeansError("--desc is required (unless using --like)")
+        postings = _parse_postings(led, args.post)
+        desc, payee, tags = args.desc, args.payee, args.tag
+    txn = led.add_transaction(when, desc, postings, payee=payee, tags=tags)
     txn = led.get_transaction(txn.id)
     print(f"Recorded transaction #{txn.id}")
     _print_transaction(led, txn)
@@ -232,7 +262,7 @@ def cmd_tx_add(args) -> int:
 
 
 def _simple_transaction(args, debit_q: str, credit_q: str,
-                        desc: str) -> int:
+                        desc: str) -> dict:
     led = _open(args)
     when = parse_date(args.date, default=date.today())
     amount = parse_amount(args.amount, led.decimals)
@@ -249,7 +279,7 @@ def _simple_transaction(args, debit_q: str, credit_q: str,
     print(f"Recorded transaction #{txn.id}: {when.isoformat()}  {desc}  "
           f"{_fmt(led, amount)}")
     print(f"    {debit.name}  <-  {credit.name}")
-    return 0
+    return {"led": led, "debit": debit, "credit": credit, "when": when}
 
 
 def _default_cash_account(args) -> str:
@@ -257,21 +287,45 @@ def _default_cash_account(args) -> str:
     return led.get_meta("default_account", "Checking")
 
 
+def _budget_feedback(led: Ledger, account, when: date) -> None:
+    """After recording an expense, show where the month's budget stands."""
+    from beans.utils import month_bounds
+
+    for budgeted, amount, period in led.budgets():
+        if budgeted.id != account.id:
+            continue
+        monthly = round(amount / BUDGET_PERIOD_MONTHS[period])
+        if not monthly:
+            return
+        start, _end = month_bounds(when.year, when.month)
+        actual = (led.flows(start, when).get(account.id, 0)
+                  * account.type.natural_sign)
+        pct = 100 * actual / monthly
+        text = (f"{account.leaf}: {pct:.0f}% of {when:%B} budget used "
+                f"({_fmt(led, actual)} of {_fmt(led, monthly)}/month)")
+        print(red(text) if pct > 100 else text)
+        return
+
+
 def cmd_spend(args) -> int:
     source = args.source or _default_cash_account(args)
     desc = args.desc or f"Spending: {args.category}"
-    return _simple_transaction(args, args.category, source, desc)
+    result = _simple_transaction(args, args.category, source, desc)
+    _budget_feedback(result["led"], result["debit"], result["when"])
+    return 0
 
 
 def cmd_earn(args) -> int:
     target = args.target or _default_cash_account(args)
     desc = args.desc or f"Income: {args.source}"
-    return _simple_transaction(args, target, args.source, desc)
+    _simple_transaction(args, target, args.source, desc)
+    return 0
 
 
 def cmd_transfer(args) -> int:
     desc = args.desc or f"Transfer: {args.source} -> {args.target}"
-    return _simple_transaction(args, args.target, args.source, desc)
+    _simple_transaction(args, args.target, args.source, desc)
+    return 0
 
 
 def cmd_tx_list(args) -> int:
@@ -487,7 +541,8 @@ def cmd_forecast(args) -> int:
         raise BeansError("--lookback must be at least 1")
     data = forecast.forecast(led, months=args.months, method=args.method,
                              lookback=args.lookback,
-                             use_budget=args.use_budget)
+                             use_budget=args.use_budget,
+                             use_recurring=args.use_recurring)
     _emit(args, led, data, forecast.render_forecast)
     return 0
 
@@ -505,15 +560,19 @@ def cmd_import(args) -> int:
     account = led.find_account(args.account)
     default_category = (led.find_account(args.category)
                         if args.category else None)
-    rows = import_csv(
+    result = import_csv(
         led, args.csvfile, account,
         default_category=default_category,
         date_col=args.date_col, desc_col=args.desc_col,
         amount_col=args.amount_col, category_col=args.category_col,
-        dry_run=args.dry_run,
+        dry_run=args.dry_run, dedupe=not args.no_dedupe,
     )
+    rows, skipped = result["imported"], result["skipped"]
     verb = "Would import" if args.dry_run else "Imported"
-    print(f"{verb} {len(rows)} transaction(s) into {account.name}")
+    summary = f"{verb} {len(rows)} transaction(s) into {account.name}"
+    if skipped:
+        summary += f" ({len(skipped)} duplicate(s) skipped)"
+    print(summary)
     if args.dry_run:
         table = Table(headers=["Date", "Description", "Counter-account",
                                "Amount"], align="lllr")
@@ -547,6 +606,242 @@ def cmd_config(args) -> int:
         raise BeansError(f"{args.key} is fixed at `beans init` time")
     led.set_meta(args.key, args.value)
     print(f"{args.key} = {args.value}")
+    return 0
+
+
+def cmd_status(args) -> int:
+    led = _open(args)
+    data = status.status_report(led)
+    _emit(args, led, data, status.render_status)
+    return 0
+
+
+def cmd_undo(args) -> int:
+    led = _open(args)
+    txn = led.last_transaction()
+    led.void_transaction(txn.id)
+    print(f"Voided transaction #{txn.id}:")
+    txn.void = True
+    _print_transaction(led, txn)
+    return 0
+
+
+def cmd_search(args) -> int:
+    led = _open(args)
+    txns = led.search_transactions(args.query, limit=args.limit)
+    if args.json:
+        print(json.dumps([_txn_to_dict(led, t) for t in txns], indent=2))
+        return 0
+    if not txns:
+        print(f"(no transactions match {args.query!r})")
+        return 0
+    for txn in txns:
+        _print_transaction(led, txn)
+    return 0
+
+
+def cmd_clear(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    through = parse_date(args.through) if args.through else None
+    count = led.set_cleared(account, txn_ids=args.ids or None,
+                            through=through, cleared=not args.undo)
+    verb = "Uncleared" if args.undo else "Cleared"
+    print(f"{verb} {count} posting(s) on {account.name}")
+    return 0
+
+
+def cmd_reconcile(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    balance = parse_amount(args.balance, led.decimals)
+    as_of = parse_date(args.date, default=date.today())
+    data = reconcile.reconcile_report(led, account, balance, as_of)
+    _emit(args, led, data, reconcile.render_reconcile)
+    return 0
+
+
+def cmd_period_close(args) -> int:
+    led = _open(args)
+    through = parse_date(args.date)
+    led.close_books(through)
+    print(f"Books closed through {through.isoformat()} — transactions on "
+          "or before this date can no longer be added or voided.")
+    return 0
+
+
+def cmd_period_status(args) -> int:
+    led = _open(args)
+    closed = led.closed_through
+    if closed:
+        print(f"Books closed through {closed.isoformat()}")
+    else:
+        print("The books are open (no period close set).")
+    return 0
+
+
+def cmd_period_reopen(args) -> int:
+    led = _open(args)
+    led.reopen_books()
+    print("Books reopened — all periods are editable again.")
+    return 0
+
+
+def cmd_rule_add(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    led.add_import_rule(args.pattern, account)
+    print(f"Import rule added: descriptions containing {args.pattern!r} "
+          f"-> {account.name}")
+    return 0
+
+
+def cmd_rule_list(args) -> int:
+    led = _open(args)
+    rules = led.import_rules()
+    if args.json:
+        print(json.dumps([
+            {"id": rid, "pattern": pattern, "account": account.name}
+            for rid, pattern, account in rules
+        ], indent=2))
+        return 0
+    if not rules:
+        print("No import rules. Add one with: "
+              "beans rule add PATTERN ACCOUNT")
+        return 0
+    table = Table(headers=["Pattern", "Account"], align="ll")
+    for _rid, pattern, account in rules:
+        table.add(pattern, account.name)
+    print(table.render())
+    return 0
+
+
+def cmd_rule_remove(args) -> int:
+    led = _open(args)
+    led.remove_import_rule(args.pattern)
+    print(f"Removed import rule {args.pattern!r}")
+    return 0
+
+
+def cmd_goal_add(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    target = parse_amount(args.target, led.decimals) if args.target else 0
+    if target == 0 and account.type is not AccountType.LIABILITY:
+        raise BeansError(
+            "savings goals need --target AMOUNT (omit it only for "
+            "liability payoff goals)"
+        )
+    by = parse_date(args.by)
+    led.add_goal(args.name, account, target, by)
+    kind = "payoff" if account.type is AccountType.LIABILITY else "savings"
+    print(f"Goal {args.name!r} added ({kind}, {account.name} "
+          f"by {by.isoformat()})")
+    return 0
+
+
+def cmd_goal_list(args) -> int:
+    led = _open(args)
+    data = goals.goals_report(led)
+    _emit(args, led, data, goals.render_goals)
+    return 0
+
+
+def cmd_goal_remove(args) -> int:
+    led = _open(args)
+    led.remove_goal(args.name)
+    print(f"Removed goal {args.name!r}")
+    return 0
+
+
+def cmd_invest_buy(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    cash = led.find_account(args.source or _default_cash_account(args))
+    when = parse_date(args.date, default=date.today())
+    qty = invest.parse_quantity(args.quantity)
+    price = parse_amount(args.price, led.decimals)
+    result = invest.buy(led, args.symbol, qty, price, account, cash, when)
+    print(f"Recorded transaction #{result['txn_id']}: bought "
+          f"{args.quantity} {args.symbol.upper()} for "
+          f"{_fmt(led, result['cost'])} ({account.name} <- {cash.name})")
+    return 0
+
+
+def cmd_invest_sell(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    cash = led.find_account(args.target or _default_cash_account(args))
+    when = parse_date(args.date, default=date.today())
+    qty = invest.parse_quantity(args.quantity)
+    price = parse_amount(args.price, led.decimals)
+    result = invest.sell(led, args.symbol, qty, price, account, cash, when)
+    gain = result["gain"]
+    gain_text = (f"realized gain {_fmt(led, gain)}" if gain >= 0
+                 else f"realized loss {_fmt(led, -gain)}")
+    print(f"Recorded transaction #{result['txn_id']}: sold "
+          f"{args.quantity} {args.symbol.upper()} for "
+          f"{_fmt(led, result['proceeds'])} ({gain_text})")
+    return 0
+
+
+def cmd_invest_list(args) -> int:
+    led = _open(args)
+    data = invest.portfolio(led)
+    _emit(args, led, data, invest.render_portfolio)
+    return 0
+
+
+def cmd_invest_mark(args) -> int:
+    led = _open(args)
+    when = parse_date(args.date, default=date.today())
+    data = invest.mark_to_market(led, when, dry_run=args.dry_run)
+    _emit(args, led, data, invest.render_mark)
+    return 0
+
+
+def cmd_price_set(args) -> int:
+    led = _open(args)
+    when = parse_date(args.date, default=date.today())
+    price = parse_amount(args.price, led.decimals)
+    led.set_price(args.symbol, when, price)
+    print(f"{args.symbol.upper()} = {_fmt(led, price)} "
+          f"as of {when.isoformat()}")
+    return 0
+
+
+def cmd_price_list(args) -> int:
+    led = _open(args)
+    rows = led.prices(symbol=args.symbol)
+    if args.json:
+        print(json.dumps([
+            {"symbol": r["symbol"], "date": r["date"],
+             "price": reports.to_major(r["price"], led.decimals)}
+            for r in rows
+        ], indent=2))
+        return 0
+    if not rows:
+        print("No prices recorded. Add one with: "
+              "beans price set SYMBOL PRICE")
+        return 0
+    table = Table(headers=["Symbol", "Date", "Price"], align="llr")
+    for r in rows:
+        table.add(r["symbol"], r["date"], money(r["price"], led.decimals))
+    print(table.render())
+    return 0
+
+
+def cmd_completions(args) -> int:
+    parser = build_parser()
+    command_map = {}
+    for action in parser._subparsers._group_actions:
+        for name, sub in action.choices.items():
+            subs = []
+            if sub._subparsers:
+                for sub_action in sub._subparsers._group_actions:
+                    subs = sorted(sub_action.choices.keys())
+            command_map[name] = subs
+    print(completions.generate(args.shell, command_map))
     return 0
 
 
@@ -611,6 +906,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", "-t",
                    choices=[t.value for t in AccountType])
     p.add_argument("--all", action="store_true", help="include closed")
+    p.add_argument("--names", action="store_true",
+                   help="print bare account names (for shell completion)")
     _add_json_arg(p)
     p.set_defaults(func=cmd_account_list)
     p = account_sub.add_parser("close", help="close a zero-balance account")
@@ -638,15 +935,18 @@ def build_parser() -> argparse.ArgumentParser:
                "--post Income:Salary",
     )
     p.add_argument("--date", "-d", help="YYYY-MM-DD (default: today)")
-    p.add_argument("--desc", "-m", required=True, help="description")
+    p.add_argument("--desc", "-m", help="description")
     p.add_argument("--payee", default="")
     p.add_argument("--tag", action="append", default=[],
                    help="tag (repeatable)")
-    p.add_argument("--post", nargs="+", action="append", required=True,
+    p.add_argument("--post", nargs="+", action="append",
                    metavar=("ACCOUNT [AMOUNT]", ""),
                    help="posting: account and amount; positive = debit, "
                         "negative = credit; omit the amount on one posting "
                         "to auto-balance (repeatable)")
+    p.add_argument("--like", type=int, metavar="ID",
+                   help="clone postings/description from transaction ID "
+                        "(override with --date/--desc/--payee)")
     p.set_defaults(func=cmd_tx_add)
     p = tx_sub.add_parser("list", help="list transactions")
     _add_period_args(p)
@@ -815,6 +1115,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="months of history to learn from (default: 6)")
     p.add_argument("--use-budget", action="store_true",
                    help="use budgeted amounts where budgets exist")
+    p.add_argument("--use-recurring", action="store_true",
+                   help="project scheduled transactions at their exact "
+                        "amounts and dates (takes priority over budgets "
+                        "and history for those accounts)")
     _add_json_arg(p)
     p.set_defaults(func=cmd_forecast)
 
@@ -837,6 +1141,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--category-col", default="category")
     p.add_argument("--dry-run", action="store_true",
                    help="parse and report without writing")
+    p.add_argument("--no-dedupe", action="store_true",
+                   help="import rows even if a matching transaction "
+                        "(same date, account, amount) already exists")
     p.set_defaults(func=cmd_import)
 
     p = sub.add_parser("config", help="get or set ledger configuration")
@@ -845,23 +1152,216 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("value", nargs="?")
     p.set_defaults(func=cmd_config)
 
+    p = sub.add_parser("status",
+                       help="one-screen dashboard (default command)")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("undo", help="void the most recent transaction")
+    p.set_defaults(func=cmd_undo)
+
+    p = sub.add_parser("search",
+                       help="full-text search of descriptions/payees/tags")
+    p.add_argument("query")
+    p.add_argument("--limit", "-n", type=int, help="last N matches")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("clear",
+                       help="mark postings cleared against a statement")
+    p.add_argument("account")
+    p.add_argument("ids", nargs="*", type=int, metavar="ID",
+                   help="transaction ids to clear")
+    p.add_argument("--through", metavar="DATE",
+                   help="clear everything dated on or before DATE")
+    p.add_argument("--undo", action="store_true",
+                   help="un-clear instead of clear")
+    p.set_defaults(func=cmd_clear)
+
+    p = sub.add_parser("reconcile",
+                       help="compare cleared balance to a bank statement")
+    p.add_argument("account")
+    p.add_argument("--balance", "-b", required=True,
+                   help="the statement's ending balance")
+    p.add_argument("--date", "-d", help="statement date (default: today)")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_reconcile)
+
+    # period
+    p_period = sub.add_parser("period",
+                              help="close or reopen accounting periods")
+    period_sub = p_period.add_subparsers(dest="subcommand",
+                                         metavar="subcommand")
+    p = period_sub.add_parser(
+        "close", help="lock all transactions through a date")
+    p.add_argument("date", help="close the books through this date")
+    p.set_defaults(func=cmd_period_close)
+    p = period_sub.add_parser("status", help="show the period-close state")
+    p.set_defaults(func=cmd_period_status)
+    p = period_sub.add_parser("reopen", help="remove the period lock")
+    p.set_defaults(func=cmd_period_reopen)
+
+    # rule
+    p_rule = sub.add_parser("rule",
+                            help="auto-categorization rules for import")
+    rule_sub = p_rule.add_subparsers(dest="subcommand", metavar="subcommand")
+    p = rule_sub.add_parser(
+        "add", help="route imported rows to an account by description",
+        epilog="Example: beans rule add 'WHOLE FOODS' Groceries",
+    )
+    p.add_argument("pattern",
+                   help="case-insensitive text to match in descriptions")
+    p.add_argument("account")
+    p.set_defaults(func=cmd_rule_add)
+    p = rule_sub.add_parser("list", help="list import rules")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_rule_list)
+    p = rule_sub.add_parser("remove", help="remove an import rule")
+    p.add_argument("pattern")
+    p.set_defaults(func=cmd_rule_remove)
+
+    # goal
+    p_goal = sub.add_parser("goal",
+                            help="savings goals and debt-payoff targets")
+    goal_sub = p_goal.add_subparsers(dest="subcommand", metavar="subcommand")
+    p = goal_sub.add_parser(
+        "add", help="add a goal",
+        epilog="Examples: beans goal add house --account Savings "
+               "--target 20000 --by 2028-01-01 | beans goal add car-free "
+               "--account Liabilities:Loans --by 2027-06-01",
+    )
+    p.add_argument("name")
+    p.add_argument("--account", "-a", required=True,
+                   help="asset to grow or liability to pay down")
+    p.add_argument("--target",
+                   help="target balance (omit for liability payoff = 0)")
+    p.add_argument("--by", required=True, metavar="DATE",
+                   help="target date (YYYY-MM-DD)")
+    p.set_defaults(func=cmd_goal_add)
+    p = goal_sub.add_parser("list", help="show goal progress")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_goal_list)
+    p = goal_sub.add_parser("remove", help="remove a goal")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_goal_remove)
+
+    # invest
+    p_invest = sub.add_parser("invest",
+                              help="investment lots, valuation, and "
+                                   "mark-to-market")
+    invest_sub = p_invest.add_subparsers(dest="subcommand",
+                                         metavar="subcommand")
+    p = invest_sub.add_parser("buy", help="buy a security into an account")
+    p.add_argument("symbol")
+    p.add_argument("quantity")
+    p.add_argument("--price", "-p", required=True,
+                   help="price paid per share/unit")
+    p.add_argument("--account", "-a", required=True,
+                   help="investment (asset) account holding the lot")
+    p.add_argument("--from", dest="source", metavar="ACCOUNT",
+                   help="paying cash account (default: config "
+                        "default_account or Checking)")
+    p.add_argument("--date", "-d")
+    p.set_defaults(func=cmd_invest_buy)
+    p = invest_sub.add_parser("sell",
+                              help="sell FIFO, booking realized gain/loss")
+    p.add_argument("symbol")
+    p.add_argument("quantity")
+    p.add_argument("--price", "-p", required=True)
+    p.add_argument("--account", "-a", required=True)
+    p.add_argument("--to", dest="target", metavar="ACCOUNT",
+                   help="receiving cash account (default: config "
+                        "default_account or Checking)")
+    p.add_argument("--date", "-d")
+    p.set_defaults(func=cmd_invest_sell)
+    p = invest_sub.add_parser("list", help="holdings with market values")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_invest_list)
+    p = invest_sub.add_parser(
+        "mark", help="post adjustments so book value equals market value")
+    p.add_argument("--date", "-d")
+    p.add_argument("--dry-run", action="store_true")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_invest_mark)
+
+    # price
+    p_price = sub.add_parser("price", help="security price history")
+    price_sub = p_price.add_subparsers(dest="subcommand",
+                                       metavar="subcommand")
+    p = price_sub.add_parser("set", help="record a price")
+    p.add_argument("symbol")
+    p.add_argument("price")
+    p.add_argument("--date", "-d", help="default: today")
+    p.set_defaults(func=cmd_price_set)
+    p = price_sub.add_parser("list", help="list recorded prices")
+    p.add_argument("symbol", nargs="?")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_price_list)
+
+    p = sub.add_parser("completions",
+                       help="print a shell completion script")
+    p.add_argument("shell", choices=["bash", "zsh"])
+    p.set_defaults(func=cmd_completions)
+
     return parser
+
+
+# Commands after which a "recurring rules due" reminder would be noise.
+NO_REMINDER_COMMANDS = {"init", "recur", "status", "completions", None}
+
+
+def _due_reminder(args) -> None:
+    """One-line nudge when recurring rules are due, after any command.
+
+    Written to stderr so piped output stays clean; never allowed to
+    break the command that just succeeded.
+    """
+    if getattr(args, "json", False):
+        return
+    if getattr(args, "command", None) in NO_REMINDER_COMMANDS:
+        return
+    led = getattr(args, "_ledger", None)
+    if led is None:
+        return
+    try:
+        due = [row["name"]
+               for row in recurring.list_rules(led, date.today())["rules"]
+               if row["status"] == "due"]
+        if due:
+            print(f"({len(due)} recurring rule(s) due — "
+                  "run `beans recur run`)", file=sys.stderr)
+    except Exception:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
-        # A group command (e.g. `beans tx`) without a subcommand: show help.
         name = getattr(args, "command", None)
-        for action in parser._subparsers._group_actions:
-            if name and name in action.choices:
-                action.choices[name].print_help()
-                return 2
-        parser.print_help()
-        return 0 if name is None else 2
+        if name is None:
+            # Bare `beans`: show the dashboard when a ledger exists,
+            # otherwise the help text.
+            if ledger_path(args.file).exists():
+                args.json = False
+                args.func = cmd_status
+                args.command = "status"
+            else:
+                parser.print_help()
+                return 0
+        else:
+            # A group command (e.g. `beans tx`) without a subcommand.
+            for action in parser._subparsers._group_actions:
+                if name in action.choices:
+                    action.choices[name].print_help()
+                    return 2
+            parser.print_help()
+            return 2
     try:
-        return args.func(args)
+        code = args.func(args)
+        if code == 0:
+            _due_reminder(args)
+        return code
     except BeansError as exc:
         print(f"{PROG}: error: {exc}", file=sys.stderr)
         return 1

@@ -21,9 +21,17 @@ personal finance.
   historical averages, a linear trend, or your budgets.
 - **Analysis** — savings rate, liquidity runway, debt-to-assets,
   debt-to-income, and expense composition.
-- **Ease of use** — `spend` / `earn` / `transfer` shortcuts, fuzzy account
-  matching (`groceries` → `Expenses:Food:Groceries`), CSV import, and `--json`
-  output on every report for scripting.
+- **Reconciliation** — clear postings against bank statements and reconcile
+  to the cent, the way errors actually get caught.
+- **Investments** — FIFO lots, price history, realized gains on sale, and
+  mark-to-market adjustments so the balance sheet carries market value.
+- **Goals** — savings targets and debt payoff dates with required-monthly
+  math, plus period close to lock historical books.
+- **Ease of use** — a `beans status` dashboard, `spend` / `earn` / `transfer`
+  shortcuts with instant budget feedback, fuzzy account matching
+  (`groceries` → `Expenses:Food:Groceries`), full-text search, undo,
+  deduplicating CSV import with auto-categorization rules, shell
+  completions, and `--json` output on every report for scripting.
 - **No dependencies** — pure Python standard library; data lives in a single
   SQLite file you own.
 
@@ -58,6 +66,10 @@ beans transfer 1000 Checking Savings
 beans report income --period ytd
 beans report balance
 beans report cashflow --period ytd
+
+# Or just run `beans` for the dashboard: cash, net worth, month vs budget,
+# due recurring rules, and goal progress on one screen.
+beans
 ```
 
 ## Concepts
@@ -113,10 +125,17 @@ beans transfer 500 Checking Savings
 beans tx list --period this-month
 beans tx show 42
 beans tx void 42        # voids keep the audit trail; nothing is deleted
+beans undo              # void the most recent transaction (typo insurance)
+beans search "whole foods"             # full-text over descriptions/payees
+beans tx add --like 42 --date today    # clone a prior transaction
 beans register Checking --period ytd   # running-balance view of one account
 beans balances          # everything, grouped by type
 beans report trial      # the accountant's sanity check
 ```
+
+After `beans spend` against a budgeted category, you get instant feedback
+("Groceries: 92% of June budget used"), and any command reminds you (on
+stderr) when recurring rules are due.
 
 ### Recurring transactions
 
@@ -185,13 +204,62 @@ beans budget remove Insurance
 Budgets are normalized to the report period — a $600/month grocery budget shows
 as $1,800 for a quarter and is pro-rated for partial periods.
 
+## Reconciliation
+
+Check the ledger against reality — your bank statement:
+
+```sh
+beans reconcile Checking --balance 4512.33   # where do we stand?
+beans clear Checking 12 14 15                # mark matched entries cleared
+beans clear Checking --through 2026-05-31    # or sweep a whole statement
+beans reconcile Checking --balance 4512.33   # difference -> $0.00
+```
+
+The register shows a `*` next to cleared entries, and a nonzero difference
+with no uncleared postings points straight at a missing or duplicated
+transaction. Once a statement is reconciled, lock it:
+
+```sh
+beans period close 2026-05-31   # transactions on/before can't change
+beans period status
+beans period reopen
+```
+
 ## Forecasting
 
 ```sh
 beans forecast                          # 6 months from 6-month averages
 beans forecast --months 12 --method trend --lookback 12
 beans forecast --use-budget             # budgets drive accounts that have them
+beans forecast --use-recurring          # scheduled txns at exact amounts/dates
 ```
+
+Source priority per account: recurring schedule > budget > history.
+
+## Goals
+
+```sh
+beans goal add house --account Savings --target 20000 --by 2028-01-01
+beans goal add debt-free --account "Credit Card" --by 2027-06-01  # payoff
+beans goal list    # progress bars + required monthly contribution
+```
+
+## Investments
+
+Hold securities as FIFO lots with a price history; everything stays
+balanced double-entry:
+
+```sh
+beans invest buy VTI 10 --price 280 --account Brokerage   # cash -> lots
+beans price set VTI 295
+beans invest list                       # qty, cost basis, market, unrealized
+beans invest mark                       # post mark-to-market vs Income:Unrealized Gains
+beans invest sell VTI 5 --price 300 --account Brokerage   # FIFO, books realized gain
+```
+
+`mark` adjusts each investment account's book value to market (assumes the
+account is driven by `invest` commands), so the balance sheet reads like a
+brokerage statement while Assets = Liabilities + Equity still holds.
 
 Projects monthly income, expenses, net savings, cash position, and net worth,
 with a breakdown of which accounts drive the projection and from what basis
@@ -220,6 +288,27 @@ beans import bank.csv --account Checking --category Expenses:Other
 
 Column names are remappable (`--date-col`, `--amount-col`, `--desc-col`,
 `--category-col`) to fit whatever your bank produces.
+
+Re-importing overlapping exports is safe: rows matching an existing
+transaction (same date, account, amount) are skipped automatically
+(disable with `--no-dedupe`). Rows without a category are routed by saved
+rules before falling back to `--category`:
+
+```sh
+beans rule add "WHOLE FOODS" Groceries
+beans rule add "SHELL" Transportation
+beans rule list
+```
+
+## Shell completions
+
+```sh
+beans completions bash > ~/.local/share/bash-completion/completions/beans
+beans completions zsh  > ~/.zfunc/_beans    # with fpath+=(~/.zfunc)
+```
+
+Completes commands, subcommands, and account names (via
+`beans account list --names`).
 
 ## Customization
 
