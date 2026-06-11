@@ -424,6 +424,7 @@ def register(led: Ledger, account, start: date | None, end: date) -> dict:
         running += delta
         others = [p.account_name for p in txn.postings
                   if p.account_id != account.id]
+        mine = [p for p in txn.postings if p.account_id == account.id]
         rows.append({
             "id": txn.id,
             "date": txn.date,
@@ -431,6 +432,7 @@ def register(led: Ledger, account, start: date | None, end: date) -> dict:
             "counter": ", ".join(others),
             "amount": delta * account.type.natural_sign,
             "balance": running * account.type.natural_sign,
+            "cleared": all(p.cleared for p in mine),
         })
     return {
         "report": "register",
@@ -442,10 +444,12 @@ def register(led: Ledger, account, start: date | None, end: date) -> dict:
 
 def render_register(data: dict, decimals: int, symbol: str) -> str:
     lines = [bold(f"REGISTER — {data['account']}"), ""]
-    table = Table(headers=["ID", "Date", "Description", "Counter-account",
-                           "Amount", "Balance"], align="rlllrr")
+    table = Table(headers=["ID", "Date", "C", "Description",
+                           "Counter-account", "Amount", "Balance"],
+                  align="rllllrr")
     for row in data["rows"]:
         table.add(row["id"], row["date"].isoformat(),
+                  "*" if row["cleared"] else "",
                   row["description"][:40], row["counter"][:40],
                   money(row["amount"], decimals),
                   money(row["balance"], decimals))

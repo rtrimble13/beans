@@ -40,8 +40,41 @@ def _project(history: list[int], method: str, steps: int) -> list[int]:
     return [round(mean_y + slope * (n - 1 + step)) for step in range(1, steps + 1)]
 
 
+def _recurring_projections(
+    led: Ledger, future_keys: list[str], horizon_end: date,
+) -> dict[int, list[int]]:
+    """Per-account monthly amounts from active recurring rules over the
+    horizon. Accounts covered here are projected from their schedule
+    exactly, instead of from history or budgets."""
+    from beans.recurring import nth_occurrence
+
+    key_index = {key: i for i, key in enumerate(future_keys)}
+    out: dict[int, list[int]] = {}
+    accounts = {a.id: a for a in led.accounts(include_closed=True)}
+    for rec in led.recurrings():
+        if not rec.active:
+            continue
+        count = rec.occurrences
+        while True:
+            due = nth_occurrence(rec.start_date, rec.frequency, count)
+            if due > horizon_end or (rec.end_date and due > rec.end_date):
+                break
+            idx = key_index.get(f"{due:%Y-%m}")
+            if idx is not None:
+                for p in rec.postings:
+                    account = accounts.get(p.account_id)
+                    if account and account.type in (AccountType.INCOME,
+                                                    AccountType.EXPENSE):
+                        series = out.setdefault(
+                            account.id, [0] * len(future_keys))
+                        series[idx] += p.amount * account.type.natural_sign
+            count += 1
+    return out
+
+
 def forecast(led: Ledger, months: int = 6, method: str = "average",
-             lookback: int = 6, use_budget: bool = False) -> dict:
+             lookback: int = 6, use_budget: bool = False,
+             use_recurring: bool = False) -> dict:
     if method not in ("average", "trend"):
         raise ValueError(f"unknown forecast method: {method}")
     today = date.today()
@@ -55,8 +88,17 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
     flows = led.monthly_flows([a.id for a in accounts], hist_start, hist_end)
     budgets = budget_accounts(led) if use_budget else {}
 
+    future_keys = _month_keys(this_month_start, months + 1)[1:]
+    horizon_end = add_months(this_month_start, months + 1) - timedelta(days=1)
+    recurring = (_recurring_projections(led, future_keys, horizon_end)
+                 if use_recurring else {})
+
+    # Source priority per account: recurring schedule > budget > history.
     projections: dict[int, list[int]] = {}
     for account in accounts:
+        if account.id in recurring:
+            projections[account.id] = recurring[account.id]
+            continue
         if account.id in budgets:
             projections[account.id] = [budgets[account.id]] * months
             continue
@@ -65,8 +107,6 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
             for key in hist_keys
         ]
         projections[account.id] = _project(history, method, months)
-
-    future_keys = _month_keys(this_month_start, months + 1)[1:]
     by_type: dict[str, list[int]] = {"income": [], "expense": []}
     rows = []
     for i, key in enumerate(future_keys):
@@ -102,12 +142,18 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
     for account in accounts:
         total = sum(projections[account.id])
         if total:
+            if account.id in recurring:
+                source = "recurring"
+            elif account.id in budgets:
+                source = "budget"
+            else:
+                source = method
             detail.append({
                 "account": account.name,
                 "type": account.type.value,
                 "monthly_avg": round(total / months),
                 "total": total,
-                "source": "budget" if account.id in budgets else method,
+                "source": source,
             })
     detail.sort(key=lambda d: (d["type"], -abs(d["total"])))
 
@@ -117,6 +163,7 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
         "lookback_months": lookback,
         "horizon_months": months,
         "use_budget": use_budget,
+        "use_recurring": use_recurring,
         "current_cash": cash_now,
         "current_net_worth": net_worth_now,
         "months": rows,
@@ -126,8 +173,14 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
 
 
 def render_forecast(data: dict, decimals: int, symbol: str) -> str:
-    src = "budgets + history" if data["use_budget"] else (
-        f"{data['lookback_months']}-month history ({data['method']})")
+    parts = []
+    if data.get("use_recurring"):
+        parts.append("recurring schedule")
+    if data["use_budget"]:
+        parts.append("budgets")
+    parts.append(f"{data['lookback_months']}-month history "
+                 f"({data['method']})")
+    src = " > ".join(parts)
     lines = [
         bold("FORECAST"),
         f"Horizon: {data['horizon_months']} months | Basis: {src}",

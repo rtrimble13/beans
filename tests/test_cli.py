@@ -244,6 +244,216 @@ def test_recurring_cycle(capsys, ledger_file):
     assert json.loads(out)["total_expenses"] == "5400.00"
 
 
+def test_undo(capsys, ledger_file):
+    run(capsys, ledger_file, "earn", "100", "Salary", "--date", "2026-01-01")
+    run(capsys, ledger_file, "earn", "200", "Salary", "--date", "2026-01-02")
+    code, out, _ = run(capsys, ledger_file, "undo")
+    assert code == 0
+    assert "Voided transaction #2" in out
+    code, out, _ = run(capsys, ledger_file, "tx", "list", "--json")
+    assert [t["id"] for t in json.loads(out)] == [1]
+    # Nothing left after undoing everything.
+    run(capsys, ledger_file, "undo")
+    code, _, err = run(capsys, ledger_file, "undo")
+    assert code == 1
+    assert "no transactions" in err
+
+
+def test_search(capsys, ledger_file):
+    run(capsys, ledger_file, "spend", "10", "Dining",
+        "--date", "2026-01-01", "-m", "Pizza night", "--payee", "Luigi")
+    run(capsys, ledger_file, "spend", "20", "Groceries",
+        "--date", "2026-01-02")
+    code, out, _ = run(capsys, ledger_file, "search", "pizza", "--json")
+    assert code == 0
+    [txn] = json.loads(out)
+    assert txn["description"] == "Pizza night"
+    code, out, _ = run(capsys, ledger_file, "search", "luigi", "--json")
+    assert len(json.loads(out)) == 1
+    code, out, _ = run(capsys, ledger_file, "search", "zzz")
+    assert "no transactions match" in out
+
+
+def test_tx_add_like(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-15",
+        "--desc", "Paycheck", "--payee", "MegaCorp",
+        "--post", "Assets:Checking", "4000", "--post", "Income:Salary")
+    code, out, _ = run(capsys, ledger_file, "tx", "add",
+                       "--like", "1", "--date", "2026-02-15")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "tx", "show", "2", "--json")
+    txn = json.loads(out)
+    assert txn["date"] == "2026-02-15"
+    assert txn["description"] == "Paycheck"
+    assert txn["payee"] == "MegaCorp"
+    amounts = {p["account"]: p["amount"] for p in txn["postings"]}
+    assert amounts["Income:Salary"] == "-4000.00"
+    # --like and --post are mutually exclusive.
+    code, _, err = run(capsys, ledger_file, "tx", "add", "--like", "1",
+                       "--post", "Assets:Checking", "1")
+    assert code == 1
+    assert "mutually exclusive" in err
+
+
+def test_budget_feedback_on_spend(capsys, ledger_file):
+    run(capsys, ledger_file, "budget", "set", "Groceries", "500")
+    code, out, _ = run(capsys, ledger_file, "spend", "450", "Groceries",
+                       "--date", "today")
+    assert code == 0
+    assert "90% of" in out
+    assert "budget used" in out
+
+
+def test_due_reminder_on_stderr(capsys, ledger_file):
+    run(capsys, ledger_file, "recur", "add", "rent", "--freq", "monthly",
+        "--start", "2026-01-01", "--post", "Expenses:Housing:Rent", "1800",
+        "--post", "Assets:Checking")
+    code, _, err = run(capsys, ledger_file, "balances")
+    assert code == 0
+    assert "recurring rule(s) due" in err
+    # JSON output stays clean.
+    code, out, err = run(capsys, ledger_file, "balances", "--json")
+    json.loads(out)
+    assert "recurring" not in err
+
+
+def test_clear_and_reconcile(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Checking", "1000",
+        "--post", "Equity:Opening Balances")
+    run(capsys, ledger_file, "spend", "300", "Rent", "--date", "2026-01-10")
+    code, out, _ = run(capsys, ledger_file, "clear", "Checking",
+                       "--through", "2026-01-05")
+    assert code == 0
+    assert "Cleared 1 posting(s)" in out
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--balance", "1000", "--json")
+    data = json.loads(out)
+    assert data["difference"] == "0.00"
+    assert len(data["uncleared"]) == 1
+    code, out, _ = run(capsys, ledger_file, "clear", "Checking", "2")
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--balance", "700", "--json")
+    assert json.loads(out)["difference"] == "0.00"
+
+
+def test_period_cli(capsys, ledger_file):
+    run(capsys, ledger_file, "earn", "100", "Salary", "--date", "2026-01-01")
+    code, out, _ = run(capsys, ledger_file, "period", "close", "2026-01-31")
+    assert code == 0
+    code, _, err = run(capsys, ledger_file, "spend", "10", "Dining",
+                       "--date", "2026-01-15")
+    assert code == 1
+    assert "closed through" in err
+    code, out, _ = run(capsys, ledger_file, "period", "status")
+    assert "closed through 2026-01-31" in out
+    code, _, _ = run(capsys, ledger_file, "period", "reopen")
+    assert code == 0
+    code, _, _ = run(capsys, ledger_file, "spend", "10", "Dining",
+                     "--date", "2026-01-15")
+    assert code == 0
+
+
+def test_rule_cli_and_import(capsys, ledger_file, tmp_path):
+    code, _, _ = run(capsys, ledger_file, "rule", "add", "WHOLE FOODS",
+                     "Groceries")
+    assert code == 0
+    csv_file = tmp_path / "bank.csv"
+    csv_file.write_text("date,description,amount\n"
+                        "2026-03-01,WHOLE FOODS #1,-50.00\n")
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking")
+    assert code == 0
+    assert "Imported 1" in out
+    # Re-import: deduped.
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking")
+    assert "Imported 0" in out
+    assert "1 duplicate(s) skipped" in out
+    code, out, _ = run(capsys, ledger_file, "rule", "list", "--json")
+    assert json.loads(out)[0]["pattern"] == "WHOLE FOODS"
+
+
+def test_goal_cli(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Savings", "5000",
+        "--post", "Equity:Opening Balances")
+    code, out, _ = run(capsys, ledger_file, "goal", "add", "house",
+                       "--account", "Savings", "--target", "20000",
+                       "--by", "2030-01-01")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "goal", "list", "--json")
+    [row] = json.loads(out)["rows"]
+    assert row["progress_pct"] == 25.0
+    code, _, _ = run(capsys, ledger_file, "goal", "remove", "house")
+    assert code == 0
+
+
+def test_invest_cli(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Checking", "10000",
+        "--post", "Equity:Opening Balances")
+    code, out, _ = run(capsys, ledger_file, "invest", "buy", "VTI", "10",
+                       "--price", "280", "--account", "Brokerage",
+                       "--date", "2026-02-01")
+    assert code == 0
+    code, _, _ = run(capsys, ledger_file, "price", "set", "VTI", "300",
+                     "--date", "2026-03-01")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "invest", "list", "--json")
+    [row] = json.loads(out)["rows"]
+    assert row["unrealized"] == "200.00"
+    code, out, _ = run(capsys, ledger_file, "invest", "mark",
+                       "--date", "2026-03-15")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "invest", "sell", "VTI", "5",
+                       "--price", "300", "--account", "Brokerage",
+                       "--date", "2026-04-01")
+    assert code == 0
+    assert "realized gain" in out
+    code, out, _ = run(capsys, ledger_file, "report", "balance",
+                       "--date", "2026-04-30", "--json")
+    assert json.loads(out)["balanced"] is True
+
+
+def test_status_cli_and_bare_invocation(capsys, ledger_file):
+    run(capsys, ledger_file, "earn", "1000", "Salary", "--date", "today")
+    code, out, _ = run(capsys, ledger_file, "status")
+    assert code == 0
+    assert "BEANS STATUS" in out
+    # Bare `beans` shows the dashboard once a ledger exists.
+    code = main(["-f", ledger_file])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "BEANS STATUS" in out
+
+
+def test_bare_invocation_without_ledger(capsys, tmp_path):
+    code = main(["-f", str(tmp_path / "none.db")])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "usage:" in out
+
+
+def test_completions(capsys, ledger_file):
+    code, out, _ = run(capsys, ledger_file, "completions", "bash")
+    assert code == 0
+    assert "complete -F _beans beans" in out
+    assert "reconcile" in out and "invest" in out
+    code, out, _ = run(capsys, ledger_file, "completions", "zsh")
+    assert code == 0
+    assert "#compdef beans" in out
+
+
+def test_account_list_names(capsys, ledger_file):
+    capsys.readouterr()  # drain the fixture's init output
+    code, out, _ = run(capsys, ledger_file, "account", "list", "--names")
+    assert code == 0
+    lines = out.strip().splitlines()
+    assert "Assets:Checking" in lines
+    assert all("  " not in line for line in lines)
+
+
 def test_group_command_shows_help(capsys, ledger_file):
     code = main(["-f", ledger_file, "tx"])
     out = capsys.readouterr().out

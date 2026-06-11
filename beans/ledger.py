@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS postings (
     txn_id     INTEGER NOT NULL REFERENCES transactions(id)
                ON DELETE CASCADE,
     account_id INTEGER NOT NULL REFERENCES accounts(id),
-    amount     INTEGER NOT NULL
+    amount     INTEGER NOT NULL,
+    cleared    INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS budgets (
     id         INTEGER PRIMARY KEY,
@@ -84,9 +85,38 @@ CREATE TABLE IF NOT EXISTS recurring_postings (
     account_id   INTEGER NOT NULL REFERENCES accounts(id),
     amount       INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS import_rules (
+    id         INTEGER PRIMARY KEY,
+    pattern    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id)
+);
+CREATE TABLE IF NOT EXISTS goals (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    account_id  INTEGER NOT NULL REFERENCES accounts(id),
+    target      INTEGER NOT NULL,
+    target_date TEXT NOT NULL,
+    created     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lots (
+    id         INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id),
+    symbol     TEXT NOT NULL COLLATE NOCASE,
+    quantity   TEXT NOT NULL,
+    cost       INTEGER NOT NULL,
+    acquired   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS prices (
+    id     INTEGER PRIMARY KEY,
+    symbol TEXT NOT NULL COLLATE NOCASE,
+    date   TEXT NOT NULL,
+    price  INTEGER NOT NULL,
+    UNIQUE (symbol, date)
+);
 CREATE INDEX IF NOT EXISTS idx_postings_txn ON postings(txn_id);
 CREATE INDEX IF NOT EXISTS idx_postings_account ON postings(account_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_lots_symbol ON lots(symbol);
 """
 
 # (name, type, is_cash) — a sensible starter chart for personal finance.
@@ -148,6 +178,19 @@ class Ledger:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring ledgers created by older versions up to date. New tables
+        come from the IF NOT EXISTS bootstrap; new columns are added here."""
+        cols = {r["name"]
+                for r in self.db.execute("PRAGMA table_info(postings)")}
+        if "cleared" not in cols:
+            with self.db:
+                self.db.execute(
+                    "ALTER TABLE postings ADD COLUMN "
+                    "cleared INTEGER NOT NULL DEFAULT 0"
+                )
 
     def close(self) -> None:
         self.db.close()
@@ -322,6 +365,39 @@ class Ledger:
             )
         self.update_account(account, closed=True)
 
+    # -- period close ------------------------------------------------------
+
+    @property
+    def closed_through(self) -> date | None:
+        value = self.get_meta("closed_through")
+        return date.fromisoformat(value) if value else None
+
+    def close_books(self, through: date) -> None:
+        current = self.closed_through
+        if current and through < current:
+            raise BeansError(
+                f"books are already closed through {current.isoformat()}; "
+                "reopen first with `beans period reopen`"
+            )
+        self.set_meta("closed_through", through.isoformat())
+
+    def reopen_books(self) -> None:
+        if self.closed_through is None:
+            raise BeansError("the books are not closed")
+        with self.db:
+            self.db.execute(
+                "DELETE FROM meta WHERE key = 'closed_through'"
+            )
+
+    def _check_not_closed(self, when: date, action: str) -> None:
+        closed = self.closed_through
+        if closed and when <= closed:
+            raise BeansError(
+                f"cannot {action} dated {when.isoformat()}: the books are "
+                f"closed through {closed.isoformat()} "
+                "(see `beans period reopen`)"
+            )
+
     # -- transactions ------------------------------------------------------
 
     def _check_postings(self, postings: list[Posting]) -> None:
@@ -376,6 +452,7 @@ class Ledger:
         tags: list[str] | None = None,
     ) -> Transaction:
         self._check_postings(postings)
+        self._check_not_closed(when, "record a transaction")
         tags = tags or []
         with self.db:
             txn_id = self._insert_transaction(when, description, postings,
@@ -398,6 +475,7 @@ class Ledger:
                 account_id=p["account_id"],
                 amount=p["amount"],
                 account_name=p["name"],
+                cleared=bool(p["cleared"]),
             )
             for p in self.db.execute(
                 "SELECT p.*, a.name FROM postings p "
@@ -450,6 +528,7 @@ class Ledger:
         txn = self.get_transaction(txn_id)
         if txn.void:
             raise BeansError(f"transaction {txn_id} is already void")
+        self._check_not_closed(txn.date, "void a transaction")
         with self.db:
             self.db.execute(
                 "UPDATE transactions SET void = 1 WHERE id = ?", (txn_id,)
@@ -674,6 +753,7 @@ class Ledger:
         postings = [Posting(account_id=p.account_id, amount=p.amount)
                     for p in rec.postings]
         self._check_postings(postings)
+        self._check_not_closed(due, "post a recurring instance")
         tags = rec.tags + ["recurring"]
         description = rec.description or rec.name
         with self.db:
@@ -691,3 +771,263 @@ class Ledger:
     def remove_recurring(self, rec: Recurring) -> None:
         with self.db:
             self.db.execute("DELETE FROM recurring WHERE id = ?", (rec.id,))
+
+    # -- search and undo -----------------------------------------------------
+
+    def search_transactions(self, query: str,
+                            limit: int | None = None) -> list[Transaction]:
+        pattern = f"%{query}%"
+        rows = self.db.execute(
+            "SELECT * FROM transactions WHERE void = 0 AND "
+            "(description LIKE ? OR payee LIKE ? OR tags LIKE ?) "
+            "ORDER BY date, id",
+            (pattern, pattern, pattern),
+        ).fetchall()
+        if limit:
+            rows = rows[-limit:]
+        return [self._build_transaction(r) for r in rows]
+
+    def last_transaction(self) -> Transaction:
+        row = self.db.execute(
+            "SELECT * FROM transactions WHERE void = 0 "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            raise BeansError("no transactions to undo")
+        return self._build_transaction(row)
+
+    # -- reconciliation ------------------------------------------------------
+
+    def set_cleared(
+        self,
+        account: Account,
+        txn_ids: list[int] | None = None,
+        through: date | None = None,
+        cleared: bool = True,
+    ) -> int:
+        """Mark this account's postings cleared (or not). Selects either
+        explicit transaction ids or everything dated through a date."""
+        if not txn_ids and not through:
+            raise BeansError(
+                "specify transaction ids or --through DATE to clear"
+            )
+        sql = (
+            "UPDATE postings SET cleared = ? WHERE account_id = ? "
+            "AND txn_id IN (SELECT id FROM transactions WHERE void = 0"
+        )
+        params: list = [int(cleared), account.id]
+        if through:
+            sql += " AND date <= ?"
+            params.append(through.isoformat())
+        if txn_ids:
+            sql += f" AND id IN ({','.join('?' * len(txn_ids))})"
+            params.extend(txn_ids)
+        sql += ")"
+        with self.db:
+            cur = self.db.execute(sql, params)
+        if txn_ids and cur.rowcount == 0:
+            raise BeansError(
+                f"no postings on {account.name} match those transaction ids"
+            )
+        return cur.rowcount
+
+    def cleared_balance(self, account: Account,
+                        as_of: date | None = None) -> int:
+        sql = (
+            "SELECT COALESCE(SUM(p.amount), 0) AS total FROM postings p "
+            "JOIN transactions t ON t.id = p.txn_id "
+            "WHERE t.void = 0 AND p.cleared = 1 AND p.account_id = ?"
+        )
+        params: list = [account.id]
+        if as_of:
+            sql += " AND t.date <= ?"
+            params.append(as_of.isoformat())
+        return self.db.execute(sql, params).fetchone()["total"]
+
+    def uncleared_postings(
+        self, account: Account, as_of: date | None = None
+    ) -> list[tuple[Transaction, Posting]]:
+        sql = (
+            "SELECT DISTINCT t.* FROM transactions t "
+            "JOIN postings p ON p.txn_id = t.id "
+            "WHERE t.void = 0 AND p.cleared = 0 AND p.account_id = ?"
+        )
+        params: list = [account.id]
+        if as_of:
+            sql += " AND t.date <= ?"
+            params.append(as_of.isoformat())
+        sql += " ORDER BY t.date, t.id"
+        out = []
+        for row in self.db.execute(sql, params):
+            txn = self._build_transaction(row)
+            for p in txn.postings:
+                if p.account_id == account.id and not p.cleared:
+                    out.append((txn, p))
+        return out
+
+    # -- import rules --------------------------------------------------------
+
+    def add_import_rule(self, pattern: str, account: Account) -> None:
+        pattern = pattern.strip()
+        if not pattern:
+            raise BeansError("an import rule needs a pattern")
+        try:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO import_rules (pattern, account_id) "
+                    "VALUES (?, ?)",
+                    (pattern, account.id),
+                )
+        except sqlite3.IntegrityError:
+            raise BeansError(f"an import rule for {pattern!r} already exists")
+
+    def import_rules(self) -> list[tuple[int, str, Account]]:
+        rows = self.db.execute(
+            "SELECT r.id AS rule_id, r.pattern, a.* FROM import_rules r "
+            "JOIN accounts a ON a.id = r.account_id ORDER BY r.id"
+        ).fetchall()
+        return [(r["rule_id"], r["pattern"], self._row_to_account(r))
+                for r in rows]
+
+    def remove_import_rule(self, pattern: str) -> None:
+        with self.db:
+            cur = self.db.execute(
+                "DELETE FROM import_rules WHERE pattern = ? COLLATE NOCASE",
+                (pattern.strip(),),
+            )
+        if cur.rowcount == 0:
+            raise BeansError(f"no import rule matches {pattern!r}")
+
+    def match_import_rule(self, description: str) -> Account | None:
+        """First rule whose pattern appears in the description, if any."""
+        haystack = description.lower()
+        for _id, pattern, account in self.import_rules():
+            if pattern.lower() in haystack:
+                return account
+        return None
+
+    # -- goals ---------------------------------------------------------------
+
+    def add_goal(self, name: str, account: Account, target: int,
+                 target_date: date) -> None:
+        name = name.strip()
+        if not name:
+            raise BeansError("a goal needs a name")
+        if account.type not in (AccountType.ASSET, AccountType.LIABILITY):
+            raise BeansError(
+                "goals track asset or liability accounts "
+                "(savings targets or debt payoff)"
+            )
+        if target < 0:
+            raise BeansError("goal target cannot be negative")
+        if target_date <= date.today():
+            raise BeansError("goal target date must be in the future")
+        try:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO goals "
+                    "(name, account_id, target, target_date, created) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (name, account.id, target, target_date.isoformat(),
+                     datetime.now().isoformat(timespec="seconds")),
+                )
+        except sqlite3.IntegrityError:
+            raise BeansError(f"goal {name!r} already exists")
+
+    def goals(self) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT g.id AS goal_id, g.name AS goal_name, g.target, "
+            "g.target_date, a.* FROM goals g "
+            "JOIN accounts a ON a.id = g.account_id "
+            "ORDER BY g.target_date, g.name COLLATE NOCASE"
+        ).fetchall()
+        return [
+            {
+                "id": r["goal_id"],
+                "name": r["goal_name"],
+                "target": r["target"],
+                "target_date": date.fromisoformat(r["target_date"]),
+                "account": self._row_to_account(r),
+            }
+            for r in rows
+        ]
+
+    def remove_goal(self, name: str) -> None:
+        with self.db:
+            cur = self.db.execute(
+                "DELETE FROM goals WHERE name = ? COLLATE NOCASE",
+                (name.strip(),),
+            )
+        if cur.rowcount == 0:
+            raise BeansError(f"no goal named {name!r}")
+
+    # -- investment lots and prices --------------------------------------------
+
+    def add_lot(self, account: Account, symbol: str, quantity: str,
+                cost: int, acquired: date) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO lots (account_id, symbol, quantity, cost, "
+                "acquired) VALUES (?, ?, ?, ?, ?)",
+                (account.id, symbol.upper(), quantity, cost,
+                 acquired.isoformat()),
+            )
+
+    def lots(self, account: Account | None = None,
+             symbol: str | None = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM lots"
+        clauses, params = [], []
+        if account:
+            clauses.append("account_id = ?")
+            params.append(account.id)
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol.upper())
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY acquired, id"
+        return self.db.execute(sql, params).fetchall()
+
+    def update_lot(self, lot_id: int, quantity: str, cost: int) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE lots SET quantity = ?, cost = ? WHERE id = ?",
+                (quantity, cost, lot_id),
+            )
+
+    def delete_lot(self, lot_id: int) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM lots WHERE id = ?", (lot_id,))
+
+    def set_price(self, symbol: str, when: date, price: int) -> None:
+        if price <= 0:
+            raise BeansError("price must be positive")
+        with self.db:
+            self.db.execute(
+                "INSERT INTO prices (symbol, date, price) VALUES (?, ?, ?) "
+                "ON CONFLICT(symbol, date) DO UPDATE SET "
+                "price = excluded.price",
+                (symbol.upper(), when.isoformat(), price),
+            )
+
+    def latest_price(self, symbol: str,
+                     as_of: date | None = None) -> tuple[date, int] | None:
+        sql = "SELECT date, price FROM prices WHERE symbol = ?"
+        params: list = [symbol.upper()]
+        if as_of:
+            sql += " AND date <= ?"
+            params.append(as_of.isoformat())
+        sql += " ORDER BY date DESC LIMIT 1"
+        row = self.db.execute(sql, params).fetchone()
+        if not row:
+            return None
+        return date.fromisoformat(row["date"]), row["price"]
+
+    def prices(self, symbol: str | None = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM prices"
+        params: list = []
+        if symbol:
+            sql += " WHERE symbol = ?"
+            params.append(symbol.upper())
+        sql += " ORDER BY symbol, date"
+        return self.db.execute(sql, params).fetchall()
