@@ -83,3 +83,25 @@ class Transaction:
     tags: list[str] = field(default_factory=list)
     void: bool = False
     postings: list[Posting] = field(default_factory=list)
+
+
+RECURRENCE_FREQUENCIES = (
+    "daily", "weekly", "biweekly", "monthly", "quarterly", "yearly",
+)
+
+
+@dataclass
+class Recurring:
+    """A scheduled transaction template posted on a fixed cadence."""
+
+    id: int
+    name: str
+    frequency: str
+    start_date: datetime.date
+    end_date: datetime.date | None = None
+    occurrences: int = 0  # how many instances have been posted
+    active: bool = True
+    description: str = ""
+    payee: str = ""
+    tags: list[str] = field(default_factory=list)
+    postings: list[Posting] = field(default_factory=list)

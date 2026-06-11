@@ -23,7 +23,8 @@ def to_major(minor: int, decimals: int) -> str:
 
 
 # Report-dict keys whose integer values are counts, not money.
-NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months"}
+NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
+                  "posted_count"}
 
 
 def jsonify(value, decimals: int):

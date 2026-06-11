@@ -195,6 +195,55 @@ def test_config(capsys, ledger_file):
     assert data["rows"][0]["amount"] == "-25.00"
 
 
+def test_recurring_cycle(capsys, ledger_file):
+    code, out, _ = run(
+        capsys, ledger_file, "recur", "add", "rent",
+        "--freq", "monthly", "--start", "2026-01-01",
+        "--post", "Expenses:Housing:Rent", "1800",
+        "--post", "Assets:Checking",
+    )
+    assert code == 0
+    assert "first due 2026-01-01" in out
+
+    code, out, _ = run(capsys, ledger_file, "recur", "run",
+                       "--to", "2026-03-15", "--dry-run")
+    assert code == 0
+    assert "Would post 3" in out
+
+    code, out, _ = run(capsys, ledger_file, "recur", "run",
+                       "--to", "2026-03-15", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert len(data["posted"]) == 3
+    assert data["posted"][0]["amount"] == "1800.00"
+
+    code, out, _ = run(capsys, ledger_file, "recur", "list", "--json")
+    [rule] = json.loads(out)["rules"]
+    assert rule["posted_count"] == 3
+    assert rule["next_due"] == "2026-04-01"
+
+    code, out, _ = run(capsys, ledger_file, "recur", "show", "rent")
+    assert code == 0
+    assert "monthly" in out
+
+    code, _, _ = run(capsys, ledger_file, "recur", "pause", "rent")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "recur", "run",
+                       "--to", "2026-12-31")
+    assert "Posted 0" in out
+    code, _, _ = run(capsys, ledger_file, "recur", "resume", "rent")
+    assert code == 0
+
+    code, _, _ = run(capsys, ledger_file, "recur", "remove", "rent")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "recur", "list")
+    assert "No recurring rules" in out
+    # Posted history survives rule removal.
+    code, out, _ = run(capsys, ledger_file, "report", "income",
+                       "--period", "2026", "--json")
+    assert json.loads(out)["total_expenses"] == "5400.00"
+
+
 def test_group_command_shows_help(capsys, ledger_file):
     code = main(["-f", ledger_file, "tx"])
     out = capsys.readouterr().out
