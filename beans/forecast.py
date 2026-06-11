@@ -46,7 +46,8 @@ def _recurring_projections(
     """Per-account monthly amounts from active recurring rules over the
     horizon. Accounts covered here are projected from their schedule
     exactly, instead of from history or budgets."""
-    from beans.recurring import nth_occurrence
+    from beans.recurring import MAX_RUN_PER_RULE, nth_occurrence
+    from beans.utils import BeansError
 
     key_index = {key: i for i, key in enumerate(future_keys)}
     out: dict[int, list[int]] = {}
@@ -55,7 +56,13 @@ def _recurring_projections(
         if not rec.active:
             continue
         count = rec.occurrences
-        while True:
+        for step in range(MAX_RUN_PER_RULE + 1):
+            if step == MAX_RUN_PER_RULE:
+                raise BeansError(
+                    f"recurring rule {rec.name!r} generated more than "
+                    f"{MAX_RUN_PER_RULE} occurrences while building forecast "
+                    "— check its start date, or remove and recreate it"
+                )
             due = nth_occurrence(rec.start_date, rec.frequency, count)
             if due > horizon_end or (rec.end_date and due > rec.end_date):
                 break
