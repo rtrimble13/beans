@@ -1212,11 +1212,17 @@ class Ledger:
 
     def set_fx_rate(self, code: str, when: date, rate: Decimal) -> None:
         code = code.upper().strip()
+        if not code.isalpha() or len(code) != 3:
+            raise BeansError(
+                f"invalid currency code {code!r} (use an ISO code like EUR)"
+            )
         if code == self.currency:
             raise BeansError(
                 f"{code} is the ledger's base currency — rates are quoted "
                 "as base units per foreign unit"
             )
+        if rate <= 0:
+            raise BeansError("exchange rate must be positive")
         with self.db:
             self.db.execute(
                 "INSERT INTO fx_rates (currency, date, rate) "

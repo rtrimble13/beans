@@ -92,6 +92,15 @@ def test_set_rate_rejects_base_currency(led):
         led.set_fx_rate("USD", date(2026, 1, 1), Decimal("1"))
 
 
+def test_set_rate_validates_inputs(led):
+    with pytest.raises(BeansError, match="invalid currency code"):
+        led.set_fx_rate("EURO", date(2026, 1, 1), Decimal("1.1"))
+    with pytest.raises(BeansError, match="must be positive"):
+        led.set_fx_rate("EUR", date(2026, 1, 1), Decimal("0"))
+    with pytest.raises(BeansError, match="must be positive"):
+        led.set_fx_rate("EUR", date(2026, 1, 1), Decimal("-1.1"))
+
+
 def test_revalue_books_fx_gain_and_balances(led):
     from beans.reports import balance_sheet
 

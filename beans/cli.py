@@ -898,7 +898,37 @@ def cmd_currency_set(args) -> int:
 def cmd_currency_list(args) -> int:
     led = _open(args)
     data = fx.currencies_report(led)
-    _emit(args, led, data, fx.render_currencies)
+    if args.json:
+        # Serialized by hand: foreign_balance is in the *foreign*
+        # currency's minor units, so the generic base-decimals
+        # conversion would mangle 0-decimal currencies like JPY.
+        def major(minor, decimals):
+            return (reports.to_major(minor, decimals)
+                    if minor is not None else None)
+
+        print(json.dumps({
+            "report": data["report"],
+            "as_of": data["as_of"].isoformat(),
+            "base_currency": data["base_currency"],
+            "rows": [
+                {
+                    "account": row["account"],
+                    "currency": row["currency"],
+                    "foreign_balance": major(
+                        row["foreign_balance"],
+                        currency_decimals(row["currency"])),
+                    "book": major(row["book"], led.decimals),
+                    "rate": row["rate"],
+                    "rate_date": (row["rate_date"].isoformat()
+                                  if row["rate_date"] else None),
+                    "market": major(row["market"], led.decimals),
+                    "unrealized": major(row["unrealized"], led.decimals),
+                }
+                for row in data["rows"]
+            ],
+        }, indent=2))
+        return 0
+    print(fx.render_currencies(data, led.decimals, _symbol(led)))
     return 0
 
 

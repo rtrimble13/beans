@@ -495,6 +495,26 @@ def test_multicurrency_cli(capsys, ledger_file):
     assert "1.25" in out
 
 
+def test_currency_list_json_foreign_decimals(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Checking", "1000",
+        "--post", "Equity:Opening Balances")
+    run(capsys, ledger_file, "account", "add", "Assets:Yen", "--type",
+        "asset", "--currency", "JPY")
+    run(capsys, ledger_file, "currency", "set", "JPY", "0.0067",
+        "--date", "2026-01-01")
+    code, _, _ = run(capsys, ledger_file, "transfer", "100",
+                     "Checking", "Yen", "--date", "2026-02-01",
+                     "--foreign", "14925")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "currency", "list", "--json")
+    assert code == 0
+    [row] = json.loads(out)["rows"]
+    # JPY has no minor units: the foreign balance must not gain ".00".
+    assert row["foreign_balance"] == "14925"
+    assert row["book"] == "100.00"
+
+
 def test_export_and_backup_cli(capsys, ledger_file, tmp_path):
     run(capsys, ledger_file, "earn", "1000", "Salary",
         "--date", "2026-01-05")
