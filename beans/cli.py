@@ -21,13 +21,14 @@ from beans import (
     status,
 )
 from beans.importer import import_csv
-from beans.ledger import BUDGET_PERIOD_MONTHS, Ledger, ledger_path
+from beans.ledger import Ledger, ledger_path
 from beans.models import RECURRENCE_FREQUENCIES, AccountType, Posting
 from beans.render import Table, bold, money, red
 from beans.utils import (
     BeansError,
     currency_symbol,
     format_amount,
+    month_bounds,
     parse_amount,
     parse_date,
     parse_period,
@@ -80,10 +81,10 @@ def _print_transaction(led: Ledger, txn) -> None:
     if txn.tags:
         header += "  #" + " #".join(txn.tags)
     print(bold(header))
-    width = max(len(p.account_name) for p in txn.postings)
+    table = Table(align="lr")
     for p in txn.postings:
-        print(f"    {p.account_name:<{width}}  "
-              f"{money(p.amount, led.decimals):>14}")
+        table.add(p.account_name, money(p.amount, led.decimals))
+    print(table.render(indent="    "))
 
 
 def _txn_to_dict(led: Ledger, txn) -> dict:
@@ -262,7 +263,9 @@ def cmd_tx_add(args) -> int:
 
 
 def _simple_transaction(args, debit_q: str, credit_q: str,
-                        desc: str) -> dict:
+                        desc: str) -> tuple:
+    """Record a two-leg transaction; returns (debit account, date) for
+    callers that follow up (e.g. budget feedback)."""
     led = _open(args)
     when = parse_date(args.date, default=date.today())
     amount = parse_amount(args.amount, led.decimals)
@@ -279,7 +282,7 @@ def _simple_transaction(args, debit_q: str, credit_q: str,
     print(f"Recorded transaction #{txn.id}: {when.isoformat()}  {desc}  "
           f"{_fmt(led, amount)}")
     print(f"    {debit.name}  <-  {credit.name}")
-    return {"led": led, "debit": debit, "credit": credit, "when": when}
+    return debit, when
 
 
 def _default_cash_account(args) -> str:
@@ -289,29 +292,23 @@ def _default_cash_account(args) -> str:
 
 def _budget_feedback(led: Ledger, account, when: date) -> None:
     """After recording an expense, show where the month's budget stands."""
-    from beans.utils import month_bounds
-
-    for budgeted, amount, period in led.budgets():
-        if budgeted.id != account.id:
-            continue
-        monthly = round(amount / BUDGET_PERIOD_MONTHS[period])
-        if not monthly:
-            return
-        start, _end = month_bounds(when.year, when.month)
-        actual = (led.flows(start, when).get(account.id, 0)
-                  * account.type.natural_sign)
-        pct = 100 * actual / monthly
-        text = (f"{account.leaf}: {pct:.0f}% of {when:%B} budget used "
-                f"({_fmt(led, actual)} of {_fmt(led, monthly)}/month)")
-        print(red(text) if pct > 100 else text)
+    monthly = budget.budget_accounts(led).get(account.id)
+    if not monthly:
         return
+    start, _end = month_bounds(when.year, when.month)
+    actual = (led.flows(start, when).get(account.id, 0)
+              * account.type.natural_sign)
+    pct = 100 * actual / monthly
+    text = (f"{account.leaf}: {pct:.0f}% of {when:%B} budget used "
+            f"({_fmt(led, actual)} of {_fmt(led, monthly)}/month)")
+    print(red(text) if pct > 100 else text)
 
 
 def cmd_spend(args) -> int:
     source = args.source or _default_cash_account(args)
     desc = args.desc or f"Spending: {args.category}"
-    result = _simple_transaction(args, args.category, source, desc)
-    _budget_feedback(result["led"], result["debit"], result["when"])
+    debit, when = _simple_transaction(args, args.category, source, desc)
+    _budget_feedback(_open(args), debit, when)
     return 0
 
 
@@ -1324,9 +1321,7 @@ def _due_reminder(args) -> None:
     if led is None:
         return
     try:
-        due = [row["name"]
-               for row in recurring.list_rules(led, date.today())["rules"]
-               if row["status"] == "due"]
+        due = recurring.due_names(led, date.today())
         if due:
             print(f"({len(due)} recurring rule(s) due — "
                   "run `beans recur run`)", file=sys.stderr)

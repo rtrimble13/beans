@@ -47,6 +47,7 @@ def import_csv(
     if not file.exists():
         raise BeansError(f"file not found: {path}")
     imported, skipped = [], []
+    rules = led.import_rules()  # fetched once, matched per row
     with file.open(newline="") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
@@ -80,7 +81,7 @@ def import_csv(
                 except BeansError as exc:
                     raise BeansError(f"{path}:{lineno}: {exc}")
             if counter is None and desc:
-                counter = led.match_import_rule(desc)
+                counter = led.match_import_rule(desc, rules)
             if counter is None:
                 counter = default_category
             if counter is None:

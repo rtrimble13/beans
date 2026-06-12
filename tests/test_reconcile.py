@@ -23,7 +23,8 @@ def test_clear_by_ids_and_balance(led):
     assert count == 2
     assert led.cleared_balance(checking) == 70000
     uncleared = led.uncleared_postings(checking)
-    assert [t.id for t, _p in uncleared] == [3]
+    assert [r["txn_id"] for r in uncleared] == [3]
+    assert uncleared[0]["amount"] == -5000
 
 
 def test_clear_through_date(led):

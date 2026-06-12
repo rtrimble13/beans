@@ -8,8 +8,9 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from beans import recurring
+from beans.budget import budget_accounts
 from beans.goals import goals_report
-from beans.ledger import BUDGET_PERIOD_MONTHS, Ledger
+from beans.ledger import Ledger
 from beans.models import AccountType
 from beans.render import Table, bold, green, money, red
 from beans.utils import month_bounds
@@ -18,61 +19,37 @@ from beans.utils import month_bounds
 def status_report(led: Ledger, today: date | None = None) -> dict:
     today = today or date.today()
     raw = led.balances(as_of=today)
-    raw_30d = led.balances(as_of=today - timedelta(days=30))
-    accounts = {a.id: a for a in led.accounts(include_closed=True)}
+    position = led.position(raw=raw)
+    position_30d = led.position(as_of=today - timedelta(days=30))
 
-    def totals(balances: dict[int, int]) -> tuple[int, int, int]:
-        assets = sum(v for k, v in balances.items()
-                     if k in accounts
-                     and accounts[k].type is AccountType.ASSET)
-        liabilities = -sum(v for k, v in balances.items()
-                           if k in accounts
-                           and accounts[k].type is AccountType.LIABILITY)
-        cash = sum(v for k, v in balances.items()
-                   if k in accounts and accounts[k].is_cash)
-        return assets, liabilities, cash
-
-    assets, liabilities, cash = totals(raw)
-    assets_30d, liabilities_30d, _ = totals(raw_30d)
-    net_worth = assets - liabilities
-
-    month_start, month_end = month_bounds(today.year, today.month)
+    month_start, _month_end = month_bounds(today.year, today.month)
     flows = led.flows(month_start, today)
-    income = sum(v * AccountType.INCOME.natural_sign
-                 for k, v in flows.items()
-                 if k in accounts
-                 and accounts[k].type is AccountType.INCOME)
-    expenses = sum(v * AccountType.EXPENSE.natural_sign
-                   for k, v in flows.items()
-                   if k in accounts
-                   and accounts[k].type is AccountType.EXPENSE)
+    flow_totals = led.type_totals(flows)
+    income = flow_totals[AccountType.INCOME]
+    expenses = flow_totals[AccountType.EXPENSE]
 
+    monthly_budgets = budget_accounts(led)
     budget_total = budget_used = 0
     over_budget = []
-    for account, amount, period in led.budgets():
+    for account, _amount, _period in led.budgets():
         if account.type is not AccountType.EXPENSE:
             continue
-        monthly = round(amount / BUDGET_PERIOD_MONTHS[period])
+        monthly = monthly_budgets[account.id]
         actual = flows.get(account.id, 0) * account.type.natural_sign
         budget_total += monthly
         budget_used += actual
         if actual > monthly:
             over_budget.append(account.leaf)
 
-    due_rules = [
-        row["name"]
-        for row in recurring.list_rules(led, today)["rules"]
-        if row["status"] == "due"
-    ]
-
-    goal_rows = goals_report(led, as_of=today)["rows"]
+    goal_rows = goals_report(led, as_of=today, raw=raw)["rows"]
 
     return {
         "report": "status",
         "as_of": today,
-        "cash": cash,
-        "net_worth": net_worth,
-        "net_worth_change_30d": net_worth - (assets_30d - liabilities_30d),
+        "cash": position["cash"],
+        "net_worth": position["net_worth"],
+        "net_worth_change_30d": (position["net_worth"]
+                                 - position_30d["net_worth"]),
         "month": f"{today:%B %Y}",
         "month_income": income,
         "month_expenses": expenses,
@@ -80,7 +57,7 @@ def status_report(led: Ledger, today: date | None = None) -> dict:
         "budget_total": budget_total,
         "budget_used": budget_used,
         "over_budget": over_budget,
-        "due_recurring": due_rules,
+        "due_recurring": recurring.due_names(led, today),
         "goals": [
             {"name": g["name"], "progress_pct": g["progress_pct"],
              "remaining": g["remaining"],

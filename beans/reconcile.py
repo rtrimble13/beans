@@ -23,12 +23,12 @@ def reconcile_report(led: Ledger, account: Account, statement_balance: int,
     cleared = led.cleared_balance(account, as_of) * sign
     uncleared = [
         {
-            "id": txn.id,
-            "date": txn.date,
-            "description": txn.description or txn.payee,
-            "amount": posting.amount * sign,
+            "id": row["txn_id"],
+            "date": row["date"],
+            "description": row["description"] or row["payee"],
+            "amount": row["amount"] * sign,
         }
-        for txn, posting in led.uncleared_postings(account, as_of)
+        for row in led.uncleared_postings(account, as_of)
     ]
     return {
         "report": "reconcile",

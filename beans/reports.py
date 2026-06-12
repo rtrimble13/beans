@@ -356,27 +356,35 @@ def render_balances(data: dict, decimals: int, symbol: str) -> str:
 
 def net_worth_trend(led: Ledger, months: int, end: date | None = None) -> dict:
     """Month-end assets, liabilities, and net worth for the last `months`
-    months — the household equivalent of a book-value trend."""
+    months — the household equivalent of a book-value trend.
+
+    Computed from one grouped scan of the ledger (monthly deltas by
+    account type) accumulated into running balances, instead of a full
+    balances() aggregation per month."""
     end = end or date.today()
-    accounts = {a.id: a for a in led.accounts(include_closed=True)}
+    deltas = led.monthly_type_totals(end)
+    this_month_start = month_bounds(end.year, end.month)[0]
+    first_shown = add_months(this_month_start, -(months - 1))
+
+    assets = liabilities = 0
+    # Seed running totals with everything before the displayed window.
+    for ym in sorted(deltas):
+        if ym >= f"{first_shown:%Y-%m}":
+            break
+        assets += deltas[ym].get("asset", 0)
+        liabilities -= deltas[ym].get("liability", 0)
+
     rows = []
     prev_net = None
-    this_month_start = month_bounds(end.year, end.month)[0]
-    for i in range(months - 1, -1, -1):
-        m_start = add_months(this_month_start, -i)
-        m_end = month_bounds(m_start.year, m_start.month)[1]
-        as_of = min(m_end, end)
-        raw = led.balances(as_of=as_of)
-        assets = sum(v for k, v in raw.items()
-                     if k in accounts
-                     and accounts[k].type is AccountType.ASSET)
-        liabilities = -sum(v for k, v in raw.items()
-                           if k in accounts
-                           and accounts[k].type is AccountType.LIABILITY)
+    for i in range(months):
+        m_start = add_months(first_shown, i)
+        ym = f"{m_start:%Y-%m}"
+        assets += deltas.get(ym, {}).get("asset", 0)
+        liabilities -= deltas.get(ym, {}).get("liability", 0)
         net = assets - liabilities
         rows.append({
-            "month": f"{m_start:%Y-%m}",
-            "as_of": as_of,
+            "month": ym,
+            "as_of": min(month_bounds(m_start.year, m_start.month)[1], end),
             "assets": assets,
             "liabilities": liabilities,
             "net_worth": net,
