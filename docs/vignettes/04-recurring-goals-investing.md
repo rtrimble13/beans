@@ -52,9 +52,10 @@ rent      monthly    2026-01-01  due     0       1,800.00
 2 rule(s) due — post with `beans recur run`
 ```
 
-Frequencies range from `daily` to `yearly`. Monthly rules anchor to the start
-date's day-of-month and clamp to short months (a rule started Jan 31 posts
-Feb 28, then Mar 31).
+Supported frequencies are `daily`, `weekly`, `biweekly`, `monthly`,
+`quarterly`, and `yearly`. Monthly-style rules anchor to the start date's
+day-of-month and clamp to short months (a rule started Jan 31 posts Feb 28,
+then Mar 31).
 
 ## 2. Post what's due — idempotently
 

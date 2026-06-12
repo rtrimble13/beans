@@ -45,7 +45,12 @@ whichever job you have in front of you.
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured
   from running them in order.
-- Dates are fixed (the 2026 tax year) so your output matches the docs.
+- Transaction dates are fixed (the 2026 tax year) so the figures in the
+  captured output match what you'll see. Two things still track the day you run
+  them: reports with an "As of: <today>" header (`status`, `balances`,
+  `goal list`, `invest list`) will show your current date, and `beans goal add
+  --by` requires a date in the *future* — if you're following along after 2026,
+  bump those `--by` dates forward.
 - `beans` understands **fuzzy account names** — `groceries` resolves to
   `Expenses:Food:Groceries` — so the vignettes lean on the short forms once a
   workflow is established.

@@ -7,7 +7,9 @@ the cent and lock the period so it can't drift.
 
 **Prerequisites:** [Getting started](01-getting-started.md). A bank CSV export —
 we provide a sample, [`sample-bank.csv`](sample-bank.csv), so every step here is
-runnable as written.
+runnable as written. The import commands below reference it by its
+repo-root-relative path (`docs/vignettes/sample-bank.csv`), so run them from the
+repository root — or substitute the path to wherever you saved the file.
 
 Start fresh and seed opening balances:
 
@@ -72,7 +74,7 @@ Always dry-run first. `--dry-run` parses the file and shows exactly what *would*
 happen, writing nothing:
 
 ```sh
-beans import sample-bank.csv --account Checking \
+beans import docs/vignettes/sample-bank.csv --account Checking \
     --category Expenses:Other --dry-run
 ```
 
@@ -103,7 +105,7 @@ imports uncategorized.
 Happy with the preview — drop `--dry-run`:
 
 ```sh
-beans import sample-bank.csv --account Checking --category Expenses:Other
+beans import docs/vignettes/sample-bank.csv --account Checking --category Expenses:Other
 ```
 
 ```text
@@ -116,7 +118,7 @@ Bank exports overlap — next month's download will include the tail of this one
 Run the *same file* again:
 
 ```sh
-beans import sample-bank.csv --account Checking --category Expenses:Other
+beans import docs/vignettes/sample-bank.csv --account Checking --category Expenses:Other
 ```
 
 ```text
