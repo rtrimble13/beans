@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from beans.budget import budget_accounts
 from beans.ledger import Ledger
 from beans.models import AccountType
-from beans.recurring import nth_occurrence
+from beans.recurring import pending_occurrences
 from beans.render import Table, bold, money
 from beans.utils import add_months, month_bounds
 
@@ -53,21 +53,17 @@ def _recurring_projections(
     for rec in led.recurrings():
         if not rec.active:
             continue
-        count = rec.occurrences
-        while True:
-            due = nth_occurrence(rec.start_date, rec.frequency, count)
-            if due > horizon_end or (rec.end_date and due > rec.end_date):
-                break
+        for due in pending_occurrences(rec, horizon_end):
             idx = key_index.get(f"{due:%Y-%m}")
-            if idx is not None:
-                for p in rec.postings:
-                    account = accounts.get(p.account_id)
-                    if account and account.type in (AccountType.INCOME,
-                                                    AccountType.EXPENSE):
-                        series = out.setdefault(
-                            account.id, [0] * len(future_keys))
-                        series[idx] += p.amount * account.type.natural_sign
-            count += 1
+            if idx is None:
+                continue
+            for p in rec.postings:
+                account = accounts.get(p.account_id)
+                if account and account.type in (AccountType.INCOME,
+                                                AccountType.EXPENSE):
+                    series = out.setdefault(
+                        account.id, [0] * len(future_keys))
+                    series[idx] += p.amount * account.type.natural_sign
     return out
 
 
@@ -118,17 +114,9 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
         rows.append({"month": key, "income": income, "expenses": expenses,
                      "net": income - expenses})
 
-    raw = led.balances(as_of=today)
-    account_map = {a.id: a for a in led.accounts(include_closed=True)}
-    cash_now = sum(v for k, v in raw.items()
-                   if k in account_map and account_map[k].is_cash)
-    assets = sum(v for k, v in raw.items()
-                 if k in account_map
-                 and account_map[k].type is AccountType.ASSET)
-    liabilities = -sum(v for k, v in raw.items()
-                       if k in account_map
-                       and account_map[k].type is AccountType.LIABILITY)
-    net_worth_now = assets - liabilities
+    position = led.position(as_of=today)
+    cash_now = position["cash"]
+    net_worth_now = position["net_worth"]
 
     cumulative = 0
     for row in rows:

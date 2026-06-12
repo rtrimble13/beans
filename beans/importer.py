@@ -81,11 +81,7 @@ def import_csv(
                 except BeansError as exc:
                     raise BeansError(f"{path}:{lineno}: {exc}")
             if counter is None and desc:
-                haystack = desc.lower()
-                for _rule_id, pattern, rule_account in rules:
-                    if pattern.lower() in haystack:
-                        counter = rule_account
-                        break
+                counter = led.match_import_rule(desc, rules)
             if counter is None:
                 counter = default_category
             if counter is None:

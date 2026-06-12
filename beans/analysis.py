@@ -14,27 +14,17 @@ from beans.utils import months_in_range
 
 def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
     flows = led.flows(start, end)
-    raw = led.balances(as_of=end)
     accounts = {a.id: a for a in led.accounts(include_closed=True)}
 
-    def total_flow(type_: AccountType) -> int:
-        return sum(
-            v * type_.natural_sign for k, v in flows.items()
-            if k in accounts and accounts[k].type is type_
-        )
-
-    income = total_flow(AccountType.INCOME)
-    expenses = total_flow(AccountType.EXPENSE)
+    flow_totals = led.type_totals(flows)
+    income = flow_totals[AccountType.INCOME]
+    expenses = flow_totals[AccountType.EXPENSE]
     net = income - expenses
 
-    assets = sum(v for k, v in raw.items()
-                 if k in accounts and accounts[k].type is AccountType.ASSET)
-    liabilities = -sum(
-        v for k, v in raw.items()
-        if k in accounts and accounts[k].type is AccountType.LIABILITY
-    )
-    cash = sum(v for k, v in raw.items()
-               if k in accounts and accounts[k].is_cash)
+    position = led.position(as_of=end)
+    assets = position["assets"]
+    liabilities = position["liabilities"]
+    cash = position["cash"]
 
     months = months_in_range(start, end) if start else None
     monthly_expenses = expenses / months if months else None

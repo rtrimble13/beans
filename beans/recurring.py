@@ -11,25 +11,17 @@ months (Jan 31 -> Feb 28 -> Mar 31) without drifting.
 
 from __future__ import annotations
 
-import calendar
 from datetime import date, timedelta
+from typing import Iterator
 
 from beans.ledger import Ledger
 from beans.models import Recurring
-from beans.render import Table, bold, money, rpad
-from beans.utils import BeansError
+from beans.render import Table, bold, money
+from beans.utils import BeansError, add_months_clamped
 
 # Hard ceiling on instances posted per rule in one run, to surface
 # obviously wrong dates (e.g. a daily rule started decades ago).
 MAX_RUN_PER_RULE = 1000
-
-
-def add_months_clamped(anchor: date, months: int) -> date:
-    """anchor shifted by whole months, clamping the day to month length."""
-    total = anchor.year * 12 + (anchor.month - 1) + months
-    year, month = total // 12, total % 12 + 1
-    day = min(anchor.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
 
 
 def nth_occurrence(start: date, frequency: str, n: int) -> date:
@@ -57,6 +49,24 @@ def next_due(rec: Recurring) -> date | None:
     return due
 
 
+def pending_occurrences(rec: Recurring, through: date) -> Iterator[date]:
+    """Due dates of unposted instances through a date, in order — the one
+    definition of which instances exist, shared by `recur run` and the
+    forecast."""
+    for step in range(MAX_RUN_PER_RULE + 1):
+        if step == MAX_RUN_PER_RULE:
+            raise BeansError(
+                f"recurring rule {rec.name!r} generated more than "
+                f"{MAX_RUN_PER_RULE} instances in one run — check its "
+                "start date, or remove and recreate it"
+            )
+        due = nth_occurrence(rec.start_date, rec.frequency,
+                             rec.occurrences + step)
+        if due > through or (rec.end_date and due > rec.end_date):
+            return
+        yield due
+
+
 def run_due(led: Ledger, as_of: date, dry_run: bool = False) -> dict:
     """Post every active rule's occurrences due through as_of.
 
@@ -68,17 +78,9 @@ def run_due(led: Ledger, as_of: date, dry_run: bool = False) -> dict:
     for rec in led.recurrings():
         if not rec.active:
             continue
-        count = rec.occurrences
-        for step in range(MAX_RUN_PER_RULE + 1):
-            if step == MAX_RUN_PER_RULE:
-                raise BeansError(
-                    f"recurring rule {rec.name!r} generated more than "
-                    f"{MAX_RUN_PER_RULE} instances in one run — check its "
-                    "start date, or remove and recreate it"
-                )
-            due = nth_occurrence(rec.start_date, rec.frequency, count)
-            if due > as_of or (rec.end_date and due > rec.end_date):
-                break
+        # Materialize first: post_recurring_instance advances
+        # rec.occurrences, which the generator reads.
+        for due in list(pending_occurrences(rec, as_of)):
             txn_id = None
             if not dry_run:
                 txn = led.post_recurring_instance(rec, due)
@@ -90,7 +92,6 @@ def run_due(led: Ledger, as_of: date, dry_run: bool = False) -> dict:
                 "description": rec.description or rec.name,
                 "amount": sum(p.amount for p in rec.postings if p.amount > 0),
             })
-            count += 1
     return {
         "report": "recurring_run",
         "as_of": as_of,
@@ -111,6 +112,25 @@ def render_run(data: dict, decimals: int, symbol: str) -> str:
                       row["description"][:40], money(row["amount"], decimals))
         lines.append(table.render())
     return "\n".join(lines)
+
+
+def due_names(led: Ledger, as_of: date) -> list[str]:
+    """Names of active rules with an instance due — a light query on the
+    recurring table only (no postings), cheap enough to run after every
+    command for the reminder line."""
+    names = []
+    for row in led.db.execute(
+        "SELECT name, frequency, start_date, end_date, occurrences "
+        "FROM recurring WHERE active = 1 ORDER BY name COLLATE NOCASE"
+    ):
+        due = nth_occurrence(date.fromisoformat(row["start_date"]),
+                             row["frequency"], row["occurrences"])
+        if due > as_of:
+            continue
+        if row["end_date"] and due > date.fromisoformat(row["end_date"]):
+            continue
+        names.append(row["name"])
+    return names
 
 
 def list_rules(led: Ledger, as_of: date) -> dict:
@@ -178,8 +198,8 @@ def render_rule(rec: Recurring, decimals: int) -> str:
     if rec.tags:
         lines.append(f"  tags:       {', '.join(rec.tags)}")
     lines.append("  postings:")
-    width = max(len(p.account_name) for p in rec.postings)
+    table = Table(align="lr")
     for p in rec.postings:
-        lines.append(f"    {p.account_name:<{width}}  "
-                     f"{rpad(money(p.amount, decimals), 14)}")
+        table.add(p.account_name, money(p.amount, decimals))
+    lines.append(table.render(indent="    "))
     return "\n".join(lines)

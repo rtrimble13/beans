@@ -115,6 +115,15 @@ def add_months(d: date, months: int) -> date:
     return date(total // 12, total % 12 + 1, 1)
 
 
+def add_months_clamped(anchor: date, months: int) -> date:
+    """anchor shifted by whole months, clamping the day to month length
+    (Jan 31 + 1 month = Feb 28/29)."""
+    first = add_months(anchor, months)
+    return date(first.year, first.month,
+                min(anchor.day, calendar.monthrange(first.year,
+                                                    first.month)[1]))
+
+
 def parse_period(
     period: str | None,
     start: str | None = None,
@@ -201,7 +210,7 @@ def prior_period(start: date | None, end: date) -> tuple[date | None, date, str]
         raise BeansError("cannot compare against a period with no start date")
     next_day = end + timedelta(days=1)
     if start.day == 1 and next_day.day == 1:
-        months = (next_day.year - start.year) * 12 + next_day.month - start.month
+        months = int(months_in_range(start, end))
         s = add_months(start, -months)
         e = start - timedelta(days=1)
     else:

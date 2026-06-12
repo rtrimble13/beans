@@ -23,9 +23,11 @@ def _progress_bar(fraction: float) -> str:
     return "[" + "#" * filled + "-" * (BAR_WIDTH - filled) + "]"
 
 
-def goals_report(led: Ledger, as_of: date | None = None) -> dict:
+def goals_report(led: Ledger, as_of: date | None = None,
+                 raw: dict[int, int] | None = None) -> dict:
     as_of = as_of or date.today()
-    raw = led.balances(as_of=as_of)
+    if raw is None:
+        raw = led.balances(as_of=as_of)
     rows = []
     for goal in led.goals():
         account = goal["account"]

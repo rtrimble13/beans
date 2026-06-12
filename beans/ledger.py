@@ -494,6 +494,40 @@ class Ledger:
             postings=postings,
         )
 
+    def _build_transactions(self, rows: list[sqlite3.Row]) -> list[Transaction]:
+        """Build Transactions for many rows with one postings query per
+        chunk instead of one per transaction."""
+        postings_by_txn: dict[int, list[Posting]] = {r["id"]: [] for r in rows}
+        ids = list(postings_by_txn)
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            for p in self.db.execute(
+                f"SELECT p.*, a.name FROM postings p "
+                f"JOIN accounts a ON a.id = p.account_id "
+                f"WHERE p.txn_id IN ({marks}) ORDER BY p.id",
+                chunk,
+            ):
+                postings_by_txn[p["txn_id"]].append(Posting(
+                    id=p["id"],
+                    account_id=p["account_id"],
+                    amount=p["amount"],
+                    account_name=p["name"],
+                    cleared=bool(p["cleared"]),
+                ))
+        return [
+            Transaction(
+                id=row["id"],
+                date=date.fromisoformat(row["date"]),
+                description=row["description"],
+                payee=row["payee"],
+                tags=[t for t in row["tags"].split(",") if t],
+                void=bool(row["void"]),
+                postings=postings_by_txn[row["id"]],
+            )
+            for row in rows
+        ]
+
     def transactions(
         self,
         start: date | None = None,
@@ -518,11 +552,15 @@ class Ledger:
             clauses.append("t.void = 0")
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY t.date, t.id"
-        rows = self.db.execute(sql, params).fetchall()
         if limit:
-            rows = rows[-limit:]
-        return [self._build_transaction(r) for r in rows]
+            # Newest N, fetched in SQL, then restored to chronological order.
+            sql += " ORDER BY t.date DESC, t.id DESC LIMIT ?"
+            params.append(limit)
+            rows = list(reversed(self.db.execute(sql, params).fetchall()))
+        else:
+            sql += " ORDER BY t.date, t.id"
+            rows = self.db.execute(sql, params).fetchall()
+        return self._build_transactions(rows)
 
     def void_transaction(self, txn_id: int) -> Transaction:
         txn = self.get_transaction(txn_id)
@@ -552,6 +590,51 @@ class Ledger:
         return {
             r["account_id"]: r["total"] for r in self.db.execute(sql, params)
         }
+
+    def type_totals(self, amounts: dict[int, int]) -> dict[AccountType, int]:
+        """Natural-sign totals per account type for a raw balances/flows
+        map — the one place the sign convention is applied in aggregate."""
+        accounts = {a.id: a for a in self.accounts(include_closed=True)}
+        totals = {t: 0 for t in AccountType}
+        for acct_id, amount in amounts.items():
+            account = accounts.get(acct_id)
+            if account:
+                totals[account.type] += amount * account.type.natural_sign
+        return totals
+
+    def position(self, as_of: date | None = None,
+                 raw: dict[int, int] | None = None) -> dict[str, int]:
+        """Snapshot of assets, liabilities, cash, and net worth (natural
+        signs). Pass `raw` to reuse an existing balances() result."""
+        if raw is None:
+            raw = self.balances(as_of=as_of)
+        totals = self.type_totals(raw)
+        accounts = {a.id: a for a in self.accounts(include_closed=True)}
+        cash = sum(v for k, v in raw.items()
+                   if k in accounts and accounts[k].is_cash)
+        assets = totals[AccountType.ASSET]
+        liabilities = totals[AccountType.LIABILITY]
+        return {
+            "assets": assets,
+            "liabilities": liabilities,
+            "cash": cash,
+            "net_worth": assets - liabilities,
+        }
+
+    def monthly_type_totals(self, end: date) -> dict[str, dict[str, int]]:
+        """Raw posting sums grouped by 'YYYY-MM' and account type through
+        end — one scan that supports running month-end balances."""
+        out: dict[str, dict[str, int]] = {}
+        for row in self.db.execute(
+            "SELECT substr(t.date, 1, 7) AS ym, a.type, "
+            "SUM(p.amount) AS total FROM postings p "
+            "JOIN transactions t ON t.id = p.txn_id "
+            "JOIN accounts a ON a.id = p.account_id "
+            "WHERE t.void = 0 AND t.date <= ? GROUP BY ym, a.type",
+            (end.isoformat(),),
+        ):
+            out.setdefault(row["ym"], {})[row["type"]] = row["total"]
+        return out
 
     def flows(self, start: date | None, end: date) -> dict[int, int]:
         """Raw posting sums per account id within [start, end]."""
@@ -777,15 +860,19 @@ class Ledger:
     def search_transactions(self, query: str,
                             limit: int | None = None) -> list[Transaction]:
         pattern = f"%{query}%"
-        rows = self.db.execute(
+        sql = (
             "SELECT * FROM transactions WHERE void = 0 AND "
-            "(description LIKE ? OR payee LIKE ? OR tags LIKE ?) "
-            "ORDER BY date, id",
-            (pattern, pattern, pattern),
-        ).fetchall()
+            "(description LIKE ? OR payee LIKE ? OR tags LIKE ?)"
+        )
+        params: list = [pattern, pattern, pattern]
         if limit:
-            rows = rows[-limit:]
-        return [self._build_transaction(r) for r in rows]
+            sql += " ORDER BY date DESC, id DESC LIMIT ?"
+            params.append(limit)
+            rows = list(reversed(self.db.execute(sql, params).fetchall()))
+        else:
+            sql += " ORDER BY date, id"
+            rows = self.db.execute(sql, params).fetchall()
+        return self._build_transactions(rows)
 
     def last_transaction(self) -> Transaction:
         row = self.db.execute(
@@ -846,24 +933,30 @@ class Ledger:
 
     def uncleared_postings(
         self, account: Account, as_of: date | None = None
-    ) -> list[tuple[Transaction, Posting]]:
+    ) -> list[dict]:
+        """Uncleared postings on the account, oldest first, as plain rows
+        (one query — reconciliation only needs these fields)."""
         sql = (
-            "SELECT DISTINCT t.* FROM transactions t "
-            "JOIN postings p ON p.txn_id = t.id "
+            "SELECT t.id AS txn_id, t.date, t.description, t.payee, "
+            "p.amount FROM postings p "
+            "JOIN transactions t ON t.id = p.txn_id "
             "WHERE t.void = 0 AND p.cleared = 0 AND p.account_id = ?"
         )
         params: list = [account.id]
         if as_of:
             sql += " AND t.date <= ?"
             params.append(as_of.isoformat())
-        sql += " ORDER BY t.date, t.id"
-        out = []
-        for row in self.db.execute(sql, params):
-            txn = self._build_transaction(row)
-            for p in txn.postings:
-                if p.account_id == account.id and not p.cleared:
-                    out.append((txn, p))
-        return out
+        sql += " ORDER BY t.date, t.id, p.id"
+        return [
+            {
+                "txn_id": r["txn_id"],
+                "date": date.fromisoformat(r["date"]),
+                "description": r["description"],
+                "payee": r["payee"],
+                "amount": r["amount"],
+            }
+            for r in self.db.execute(sql, params)
+        ]
 
     # -- import rules --------------------------------------------------------
 
@@ -898,10 +991,15 @@ class Ledger:
         if cur.rowcount == 0:
             raise BeansError(f"no import rule matches {pattern!r}")
 
-    def match_import_rule(self, description: str) -> Account | None:
-        """First rule whose pattern appears in the description, if any."""
+    def match_import_rule(self, description: str,
+                          rules: list | None = None) -> Account | None:
+        """First rule whose pattern appears in the description, if any.
+        Pass prefetched `rules` (from import_rules()) when matching many
+        descriptions to avoid re-querying per call."""
         haystack = description.lower()
-        for _id, pattern, account in self.import_rules():
+        if rules is None:
+            rules = self.import_rules()
+        for _id, pattern, account in rules:
             if pattern.lower() in haystack:
                 return account
         return None
