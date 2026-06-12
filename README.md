@@ -77,6 +77,23 @@ beans report cashflow --period ytd
 beans
 ```
 
+## Walkthroughs
+
+New here? The [`docs/vignettes/`](docs/vignettes/) directory has guided,
+task-oriented walkthroughs that take a workflow from start to finish with real
+captured output:
+
+1. [Getting started](docs/vignettes/01-getting-started.md) — set up a ledger and
+   read your first statements.
+2. [Budgeting a month](docs/vignettes/02-budgeting-a-month.md) — set targets and
+   track spending against them.
+3. [Import & reconcile](docs/vignettes/03-import-and-reconcile.md) — import a
+   bank CSV and tie out to your statement.
+4. [Recurring, goals & investing](docs/vignettes/04-recurring-goals-investing.md)
+   — automate bills, set goals, and track investments.
+
+The rest of this README is the command reference.
+
 ## Concepts
 
 ### Accounts
