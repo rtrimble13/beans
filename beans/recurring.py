@@ -16,7 +16,7 @@ from datetime import date, timedelta
 
 from beans.ledger import Ledger
 from beans.models import Recurring
-from beans.render import Table, bold, money
+from beans.render import Table, bold, money, rpad
 from beans.utils import BeansError
 
 # Hard ceiling on instances posted per rule in one run, to surface
@@ -181,5 +181,5 @@ def render_rule(rec: Recurring, decimals: int) -> str:
     width = max(len(p.account_name) for p in rec.postings)
     for p in rec.postings:
         lines.append(f"    {p.account_name:<{width}}  "
-                     f"{money(p.amount, decimals):>14}")
+                     f"{rpad(money(p.amount, decimals), 14)}")
     return "\n".join(lines)

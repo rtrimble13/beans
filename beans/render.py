@@ -58,6 +58,12 @@ def _pad(text: str, width: int, align: str) -> str:
     return " " * gap + text if align == "r" else text + " " * gap
 
 
+def rpad(text: str, width: int) -> str:
+    """Right-align ignoring ANSI codes (plain f-string padding counts
+    the escape bytes and misaligns colored money)."""
+    return _pad(text, width, "r")
+
+
 class Table:
     """Minimal column-aligned table. align is a string like 'lrr'."""
 

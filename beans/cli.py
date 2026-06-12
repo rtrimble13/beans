@@ -21,13 +21,14 @@ from beans import (
     status,
 )
 from beans.importer import import_csv
-from beans.ledger import BUDGET_PERIOD_MONTHS, Ledger, ledger_path
+from beans.ledger import Ledger, ledger_path
 from beans.models import RECURRENCE_FREQUENCIES, AccountType, Posting
-from beans.render import Table, bold, money, red
+from beans.render import Table, bold, money, red, rpad
 from beans.utils import (
     BeansError,
     currency_symbol,
     format_amount,
+    month_bounds,
     parse_amount,
     parse_date,
     parse_period,
@@ -83,7 +84,7 @@ def _print_transaction(led: Ledger, txn) -> None:
     width = max(len(p.account_name) for p in txn.postings)
     for p in txn.postings:
         print(f"    {p.account_name:<{width}}  "
-              f"{money(p.amount, led.decimals):>14}")
+              f"{rpad(money(p.amount, led.decimals), 14)}")
 
 
 def _txn_to_dict(led: Ledger, txn) -> dict:
@@ -289,22 +290,16 @@ def _default_cash_account(args) -> str:
 
 def _budget_feedback(led: Ledger, account, when: date) -> None:
     """After recording an expense, show where the month's budget stands."""
-    from beans.utils import month_bounds
-
-    for budgeted, amount, period in led.budgets():
-        if budgeted.id != account.id:
-            continue
-        monthly = round(amount / BUDGET_PERIOD_MONTHS[period])
-        if not monthly:
-            return
-        start, _end = month_bounds(when.year, when.month)
-        actual = (led.flows(start, when).get(account.id, 0)
-                  * account.type.natural_sign)
-        pct = 100 * actual / monthly
-        text = (f"{account.leaf}: {pct:.0f}% of {when:%B} budget used "
-                f"({_fmt(led, actual)} of {_fmt(led, monthly)}/month)")
-        print(red(text) if pct > 100 else text)
+    monthly = budget.budget_accounts(led).get(account.id)
+    if not monthly:
         return
+    start, _end = month_bounds(when.year, when.month)
+    actual = (led.flows(start, when).get(account.id, 0)
+              * account.type.natural_sign)
+    pct = 100 * actual / monthly
+    text = (f"{account.leaf}: {pct:.0f}% of {when:%B} budget used "
+            f"({_fmt(led, actual)} of {_fmt(led, monthly)}/month)")
+    print(red(text) if pct > 100 else text)
 
 
 def cmd_spend(args) -> int:

@@ -15,6 +15,7 @@ from datetime import date, timedelta
 from beans.budget import budget_accounts
 from beans.ledger import Ledger
 from beans.models import AccountType
+from beans.recurring import nth_occurrence
 from beans.render import Table, bold, money
 from beans.utils import add_months, month_bounds
 
@@ -46,8 +47,6 @@ def _recurring_projections(
     """Per-account monthly amounts from active recurring rules over the
     horizon. Accounts covered here are projected from their schedule
     exactly, instead of from history or budgets."""
-    from beans.recurring import nth_occurrence
-
     key_index = {key: i for i, key in enumerate(future_keys)}
     out: dict[int, list[int]] = {}
     accounts = {a.id: a for a in led.accounts(include_closed=True)}
