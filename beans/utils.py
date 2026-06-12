@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar
 import re
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
 class BeansError(Exception):
@@ -25,9 +25,45 @@ CURRENCY_SYMBOLS = {
 
 AVG_DAYS_PER_MONTH = 365.25 / 12
 
+# Minor-unit decimal places by ISO code; everything else defaults to 2.
+CURRENCY_DECIMALS = {"JPY": 0, "KRW": 0}
+
 
 def currency_symbol(code: str) -> str:
     return CURRENCY_SYMBOLS.get(code.upper(), code.upper() + " ")
+
+
+def currency_decimals(code: str) -> int:
+    return CURRENCY_DECIMALS.get(code.upper(), 2)
+
+
+def parse_fx_rate(text: str) -> Decimal:
+    """An exchange rate: base-currency units per one foreign unit."""
+    try:
+        rate = Decimal(str(text).strip())
+    except InvalidOperation:
+        raise BeansError(f"invalid exchange rate: {text!r}")
+    if rate <= 0:
+        raise BeansError("exchange rate must be positive")
+    return rate
+
+
+def foreign_from_base(base_minor: int, rate: Decimal,
+                      base_decimals: int, foreign_decimals: int) -> int:
+    """Convert base minor units to foreign minor units at rate
+    (base per foreign unit)."""
+    value = (Decimal(base_minor)
+             * Decimal(10) ** (foreign_decimals - base_decimals) / rate)
+    return int(value.to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def base_from_foreign(foreign_minor: int, rate: Decimal,
+                      base_decimals: int, foreign_decimals: int) -> int:
+    """Convert foreign minor units to base minor units at rate
+    (base per foreign unit)."""
+    value = (Decimal(foreign_minor) * rate
+             * Decimal(10) ** (base_decimals - foreign_decimals))
+    return int(value.to_integral_value(rounding=ROUND_HALF_UP))
 
 
 # Currency codes and symbols recognized by parse_amount, longest first so

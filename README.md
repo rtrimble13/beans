@@ -25,6 +25,11 @@ personal finance.
   to the cent, the way errors actually get caught.
 - **Investments** — FIFO lots, price history, realized gains on sale, and
   mark-to-market adjustments so the balance sheet carries market value.
+- **Multi-currency** — foreign-denominated accounts with parallel foreign
+  balances, exchange-rate history, and FX revaluation, while the books and
+  statements stay in your base (functional) currency.
+- **Export & backup** — the whole ledger as JSON or flat CSV, and
+  consistent point-in-time SQLite snapshots.
 - **Goals** — savings targets and debt payoff dates with required-monthly
   math, plus period close to lock historical books.
 - **Ease of use** — a `beans status` dashboard, `spend` / `earn` / `transfer`
@@ -260,6 +265,47 @@ beans invest sell VTI 5 --price 300 --account Brokerage   # FIFO, books realized
 `mark` adjusts each investment account's book value to market (assumes the
 account is driven by `invest` commands), so the balance sheet reads like a
 brokerage statement while Assets = Liabilities + Equity still holds.
+
+## Multi-currency
+
+beans keeps its books in one base currency — the "functional currency", as
+a company would — so every transaction balances and every statement stays
+consistent. Asset and liability accounts can be denominated in a foreign
+currency; their postings carry both the base amount and the foreign amount:
+
+```sh
+beans account add "Assets:EUR Savings" --type asset --currency EUR
+beans currency set EUR 1.0832            # base units per 1 EUR
+beans transfer 1100 Checking "EUR Savings" --foreign 1000   # exact EUR
+beans transfer 550 Checking "EUR Savings"    # EUR derived from the rate
+```
+
+The foreign amount comes from the latest rate on or before the transaction
+date unless given explicitly (`--foreign` on spend/earn/transfer, or a
+third value on `tx add --post ACCOUNT AMOUNT FOREIGN`). Then:
+
+```sh
+beans currency list      # foreign balances, rates, unrealized FX
+beans currency rates     # rate history
+beans currency revalue   # post FX gains/losses vs Income:FX Gains
+```
+
+`revalue` is the FX twin of `invest mark`: it trues each foreign account's
+base value up to the current rate, so the balance sheet reflects today's
+rates while remaining balanced.
+
+## Export & backup
+
+```sh
+beans export json -o ledger.json   # everything: accounts, transactions,
+                                   # budgets, rules, goals, lots, rates
+beans export csv                   # one row per posting, for spreadsheets
+beans backup                       # timestamped copy next to the ledger
+beans backup ~/backups/            # ...or wherever you keep them
+```
+
+Backups use SQLite's online backup API, so they're consistent even if
+taken mid-write. Restore is just `beans -f backup.db`.
 
 Projects monthly income, expenses, net savings, cash position, and net worth,
 with a breakdown of which accounts drive the projection and from what basis

@@ -21,7 +21,14 @@ from beans.models import (
     Recurring,
     Transaction,
 )
-from beans.utils import BeansError, format_amount
+from decimal import Decimal
+
+from beans.utils import (
+    BeansError,
+    currency_decimals,
+    foreign_from_base,
+    format_amount,
+)
 
 DEFAULT_LEDGER_PATH = Path.home() / ".beans" / "ledger.db"
 
@@ -39,7 +46,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     cf_category TEXT CHECK (cf_category IN
                 ('operating','investing','financing')),
     closed      INTEGER NOT NULL DEFAULT 0,
-    description TEXT NOT NULL DEFAULT ''
+    description TEXT NOT NULL DEFAULT '',
+    currency    TEXT
 );
 CREATE TABLE IF NOT EXISTS transactions (
     id          INTEGER PRIMARY KEY,
@@ -51,12 +59,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     created     TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS postings (
-    id         INTEGER PRIMARY KEY,
-    txn_id     INTEGER NOT NULL REFERENCES transactions(id)
-               ON DELETE CASCADE,
-    account_id INTEGER NOT NULL REFERENCES accounts(id),
-    amount     INTEGER NOT NULL,
-    cleared    INTEGER NOT NULL DEFAULT 0
+    id             INTEGER PRIMARY KEY,
+    txn_id         INTEGER NOT NULL REFERENCES transactions(id)
+                   ON DELETE CASCADE,
+    account_id     INTEGER NOT NULL REFERENCES accounts(id),
+    amount         INTEGER NOT NULL,
+    cleared        INTEGER NOT NULL DEFAULT 0,
+    foreign_amount INTEGER
 );
 CREATE TABLE IF NOT EXISTS budgets (
     id         INTEGER PRIMARY KEY,
@@ -112,6 +121,13 @@ CREATE TABLE IF NOT EXISTS prices (
     date   TEXT NOT NULL,
     price  INTEGER NOT NULL,
     UNIQUE (symbol, date)
+);
+CREATE TABLE IF NOT EXISTS fx_rates (
+    id       INTEGER PRIMARY KEY,
+    currency TEXT NOT NULL COLLATE NOCASE,
+    date     TEXT NOT NULL,
+    rate     TEXT NOT NULL,
+    UNIQUE (currency, date)
 );
 CREATE INDEX IF NOT EXISTS idx_postings_txn ON postings(txn_id);
 CREATE INDEX IF NOT EXISTS idx_postings_account ON postings(account_id);
@@ -183,13 +199,23 @@ class Ledger:
     def _migrate(self) -> None:
         """Bring ledgers created by older versions up to date. New tables
         come from the IF NOT EXISTS bootstrap; new columns are added here."""
-        cols = {r["name"]
-                for r in self.db.execute("PRAGMA table_info(postings)")}
-        if "cleared" not in cols:
-            with self.db:
+        posting_cols = {r["name"]
+                        for r in self.db.execute("PRAGMA table_info(postings)")}
+        account_cols = {r["name"]
+                        for r in self.db.execute("PRAGMA table_info(accounts)")}
+        with self.db:
+            if "cleared" not in posting_cols:
                 self.db.execute(
                     "ALTER TABLE postings ADD COLUMN "
                     "cleared INTEGER NOT NULL DEFAULT 0"
+                )
+            if "foreign_amount" not in posting_cols:
+                self.db.execute(
+                    "ALTER TABLE postings ADD COLUMN foreign_amount INTEGER"
+                )
+            if "currency" not in account_cols:
+                self.db.execute(
+                    "ALTER TABLE accounts ADD COLUMN currency TEXT"
                 )
 
     def close(self) -> None:
@@ -247,6 +273,7 @@ class Ledger:
             cf_category=row["cf_category"],
             closed=bool(row["closed"]),
             description=row["description"],
+            currency=row["currency"],
         )
 
     def add_account(
@@ -256,6 +283,7 @@ class Ledger:
         is_cash: bool = False,
         cf_category: str | None = None,
         description: str = "",
+        currency: str | None = None,
     ) -> Account:
         name = name.strip()
         if not name or name.startswith(":") or name.endswith(":"):
@@ -267,18 +295,34 @@ class Ledger:
             )
         if is_cash and type_ is not AccountType.ASSET:
             raise BeansError("only asset accounts can be marked as cash")
+        if currency:
+            currency = currency.upper().strip()
+            if not currency.isalpha() or len(currency) != 3:
+                raise BeansError(
+                    f"invalid currency code {currency!r} (use an ISO code "
+                    "like EUR)"
+                )
+            if currency == self.currency:
+                currency = None  # the base currency needs no denomination
+            elif type_ not in (AccountType.ASSET, AccountType.LIABILITY):
+                raise BeansError(
+                    "only asset and liability accounts can be denominated "
+                    "in a foreign currency (income and expenses are always "
+                    "recorded in the base currency)"
+                )
         try:
             with self.db:
                 cur = self.db.execute(
                     "INSERT INTO accounts "
-                    "(name, type, is_cash, cf_category, description) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (name, type_.value, int(is_cash), cf_category, description),
+                    "(name, type, is_cash, cf_category, description, "
+                    "currency) VALUES (?, ?, ?, ?, ?, ?)",
+                    (name, type_.value, int(is_cash), cf_category,
+                     description, currency),
                 )
         except sqlite3.IntegrityError:
             raise BeansError(f"account {name!r} already exists")
         return Account(cur.lastrowid, name, type_, is_cash, cf_category,
-                       False, description)
+                       False, description, currency)
 
     def accounts(
         self,
@@ -413,6 +457,36 @@ class Ledger:
         if any(p.amount == 0 for p in postings):
             raise BeansError("postings must have a non-zero amount")
 
+    def _derive_foreign_amounts(self, postings: list[Posting],
+                                when: date) -> None:
+        """Fill in foreign_amount for postings on foreign-denominated
+        accounts, converting the base amount at the latest exchange rate
+        on or before the transaction date (explicit amounts win)."""
+        currencies = {
+            r["id"]: r["currency"]
+            for r in self.db.execute(
+                f"SELECT id, currency FROM accounts WHERE id IN "
+                f"({','.join('?' * len(postings))})",
+                [p.account_id for p in postings],
+            )
+        }
+        for p in postings:
+            code = currencies.get(p.account_id)
+            if not code:
+                p.foreign_amount = None
+                continue
+            if p.foreign_amount is not None:
+                continue
+            latest = self.latest_fx_rate(code, as_of=when)
+            if latest is None:
+                raise BeansError(
+                    f"no exchange rate for {code} — set one with "
+                    f"`beans currency set {code} RATE` (or pass the "
+                    "foreign amount explicitly)"
+                )
+            p.foreign_amount = foreign_from_base(
+                p.amount, latest[1], self.decimals, currency_decimals(code))
+
     def _insert_transaction(
         self,
         when: date,
@@ -423,6 +497,7 @@ class Ledger:
     ) -> int:
         """INSERT a transaction and its postings; the caller owns the
         surrounding database transaction."""
+        self._derive_foreign_amounts(postings, when)
         cur = self.db.execute(
             "INSERT INTO transactions "
             "(date, description, payee, tags, created) "
@@ -437,9 +512,10 @@ class Ledger:
         )
         txn_id = cur.lastrowid
         self.db.executemany(
-            "INSERT INTO postings (txn_id, account_id, amount) "
-            "VALUES (?, ?, ?)",
-            [(txn_id, p.account_id, p.amount) for p in postings],
+            "INSERT INTO postings (txn_id, account_id, amount, "
+            "foreign_amount) VALUES (?, ?, ?, ?)",
+            [(txn_id, p.account_id, p.amount, p.foreign_amount)
+             for p in postings],
         )
         return txn_id
 
@@ -476,6 +552,7 @@ class Ledger:
                 amount=p["amount"],
                 account_name=p["name"],
                 cleared=bool(p["cleared"]),
+                foreign_amount=p["foreign_amount"],
             )
             for p in self.db.execute(
                 "SELECT p.*, a.name FROM postings p "
@@ -514,6 +591,7 @@ class Ledger:
                     amount=p["amount"],
                     account_name=p["name"],
                     cleared=bool(p["cleared"]),
+                    foreign_amount=p["foreign_amount"],
                 ))
         return [
             Transaction(
@@ -1129,3 +1207,59 @@ class Ledger:
             params.append(symbol.upper())
         sql += " ORDER BY symbol, date"
         return self.db.execute(sql, params).fetchall()
+
+    # -- exchange rates --------------------------------------------------------
+
+    def set_fx_rate(self, code: str, when: date, rate: Decimal) -> None:
+        code = code.upper().strip()
+        if code == self.currency:
+            raise BeansError(
+                f"{code} is the ledger's base currency — rates are quoted "
+                "as base units per foreign unit"
+            )
+        with self.db:
+            self.db.execute(
+                "INSERT INTO fx_rates (currency, date, rate) "
+                "VALUES (?, ?, ?) ON CONFLICT(currency, date) DO UPDATE "
+                "SET rate = excluded.rate",
+                (code, when.isoformat(), str(rate)),
+            )
+
+    def latest_fx_rate(self, code: str,
+                       as_of: date | None = None) -> tuple[date, Decimal] | None:
+        sql = "SELECT date, rate FROM fx_rates WHERE currency = ?"
+        params: list = [code.upper()]
+        if as_of:
+            sql += " AND date <= ?"
+            params.append(as_of.isoformat())
+        sql += " ORDER BY date DESC LIMIT 1"
+        row = self.db.execute(sql, params).fetchone()
+        if not row:
+            return None
+        return date.fromisoformat(row["date"]), Decimal(row["rate"])
+
+    def fx_rates(self, code: str | None = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM fx_rates"
+        params: list = []
+        if code:
+            sql += " WHERE currency = ?"
+            params.append(code.upper())
+        sql += " ORDER BY currency, date"
+        return self.db.execute(sql, params).fetchall()
+
+    def foreign_balances(self, as_of: date | None = None) -> dict[int, int]:
+        """Foreign-currency balance (minor units of the account's own
+        currency) per foreign-denominated account id."""
+        sql = (
+            "SELECT p.account_id, SUM(p.foreign_amount) AS total "
+            "FROM postings p JOIN transactions t ON t.id = p.txn_id "
+            "WHERE t.void = 0 AND p.foreign_amount IS NOT NULL"
+        )
+        params: list = []
+        if as_of:
+            sql += " AND t.date <= ?"
+            params.append(as_of.isoformat())
+        sql += " GROUP BY p.account_id"
+        return {
+            r["account_id"]: r["total"] for r in self.db.execute(sql, params)
+        }
