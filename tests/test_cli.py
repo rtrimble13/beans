@@ -454,6 +454,88 @@ def test_account_list_names(capsys, ledger_file):
     assert all("  " not in line for line in lines)
 
 
+def test_multicurrency_cli(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Checking", "10000",
+        "--post", "Equity:Opening Balances")
+    code, out, _ = run(capsys, ledger_file, "account", "add",
+                       "Assets:EUR Savings", "--type", "asset",
+                       "--currency", "eur")
+    assert code == 0
+    assert "denominated in EUR" in out
+    code, _, _ = run(capsys, ledger_file, "currency", "set", "EUR",
+                     "1.10", "--date", "2026-01-01")
+    assert code == 0
+    # Explicit foreign amount on a transfer.
+    code, _, _ = run(capsys, ledger_file, "transfer", "1100",
+                     "Checking", "EUR Savings", "--date", "2026-02-01",
+                     "--foreign", "1000")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "account", "list", "--json")
+    accounts = {a["name"]: a for a in json.loads(out)}
+    eur = accounts["Assets:EUR Savings"]
+    assert eur["currency"] == "EUR"
+    assert eur["foreign_balance"] == "1000.00"
+    assert eur["balance"] == "1100.00"
+    # Rate moves; revalue books the unrealized FX gain.
+    run(capsys, ledger_file, "currency", "set", "EUR", "1.25",
+        "--date", "2026-03-01")
+    code, out, _ = run(capsys, ledger_file, "currency", "list", "--json")
+    [row] = json.loads(out)["rows"]
+    assert row["unrealized"] == "150.00"
+    code, out, _ = run(capsys, ledger_file, "currency", "revalue",
+                       "--date", "2026-03-15", "--json")
+    assert code == 0
+    [adj] = json.loads(out)["adjustments"]
+    assert adj["adjustment"] == "150.00"
+    code, out, _ = run(capsys, ledger_file, "report", "balance",
+                       "--date", "2026-03-31", "--json")
+    assert json.loads(out)["balanced"] is True
+    code, out, _ = run(capsys, ledger_file, "currency", "rates")
+    assert "1.25" in out
+
+
+def test_currency_list_json_foreign_decimals(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Checking", "1000",
+        "--post", "Equity:Opening Balances")
+    run(capsys, ledger_file, "account", "add", "Assets:Yen", "--type",
+        "asset", "--currency", "JPY")
+    run(capsys, ledger_file, "currency", "set", "JPY", "0.0067",
+        "--date", "2026-01-01")
+    code, _, _ = run(capsys, ledger_file, "transfer", "100",
+                     "Checking", "Yen", "--date", "2026-02-01",
+                     "--foreign", "14925")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "currency", "list", "--json")
+    assert code == 0
+    [row] = json.loads(out)["rows"]
+    # JPY has no minor units: the foreign balance must not gain ".00".
+    assert row["foreign_balance"] == "14925"
+    assert row["book"] == "100.00"
+
+
+def test_export_and_backup_cli(capsys, ledger_file, tmp_path):
+    run(capsys, ledger_file, "earn", "1000", "Salary",
+        "--date", "2026-01-05")
+    code, out, _ = run(capsys, ledger_file, "export", "json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["format"] == "beans-export"
+    assert len(data["transactions"]) == 1
+
+    out_file = tmp_path / "dump.csv"
+    code, out, _ = run(capsys, ledger_file, "export", "csv",
+                       "--output", str(out_file))
+    assert code == 0
+    assert "Exported CSV" in out
+    assert "Income:Salary" in out_file.read_text()
+
+    code, out, _ = run(capsys, ledger_file, "backup", str(tmp_path))
+    assert code == 0
+    assert "Backed up ledger to" in out
+
+
 def test_group_command_shows_help(capsys, ledger_file):
     code = main(["-f", ledger_file, "tx"])
     out = capsys.readouterr().out

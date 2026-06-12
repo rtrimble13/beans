@@ -56,6 +56,7 @@ class Account:
     cf_category: str | None = None
     closed: bool = False
     description: str = ""
+    currency: str | None = None  # denomination; None = the base currency
 
     @property
     def cashflow(self) -> str:
@@ -69,10 +70,13 @@ class Account:
 @dataclass
 class Posting:
     account_id: int
-    amount: int  # minor units, debit-positive
+    amount: int  # minor units of the base currency, debit-positive
     id: int | None = None
     account_name: str = ""
     cleared: bool = False  # confirmed against a bank statement
+    # Minor units of the account's own currency, for postings on
+    # foreign-denominated accounts (None on base-currency accounts).
+    foreign_amount: int | None = None
 
 
 @dataclass

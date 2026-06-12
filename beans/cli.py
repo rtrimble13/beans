@@ -6,13 +6,16 @@ import argparse
 import json
 import sys
 from datetime import date
+from pathlib import Path
 
 from beans import __version__
 from beans import (
     analysis,
     budget,
     completions,
+    export,
     forecast,
+    fx,
     goals,
     invest,
     reconcile,
@@ -26,11 +29,13 @@ from beans.models import RECURRENCE_FREQUENCIES, AccountType, Posting
 from beans.render import Table, bold, money, red
 from beans.utils import (
     BeansError,
+    currency_decimals,
     currency_symbol,
     format_amount,
     month_bounds,
     parse_amount,
     parse_date,
+    parse_fx_rate,
     parse_period,
 )
 
@@ -128,10 +133,13 @@ def cmd_account_add(args) -> int:
     account = led.add_account(
         args.name, type_, is_cash=args.cash,
         cf_category=args.cashflow, description=args.desc,
+        currency=args.currency,
     )
     notes = []
     if account.is_cash:
         notes.append("cash")
+    if account.currency:
+        notes.append(f"denominated in {account.currency}")
     notes.append(f"cash-flow: {account.cashflow}")
     print(f"Added {account.type.value} account "
           f"{account.name} ({', '.join(notes)})")
@@ -147,6 +155,7 @@ def cmd_account_list(args) -> int:
             print(a.name)
         return 0
     raw = led.balances()
+    foreign = led.foreign_balances()
     if args.json:
         print(json.dumps([
             {
@@ -154,21 +163,37 @@ def cmd_account_list(args) -> int:
                 "cashflow": a.cashflow, "closed": a.closed,
                 "balance": reports.to_major(
                     raw.get(a.id, 0) * a.type.natural_sign, led.decimals),
+                "currency": a.currency,
+                "foreign_balance": (
+                    reports.to_major(
+                        foreign.get(a.id, 0) * a.type.natural_sign,
+                        currency_decimals(a.currency))
+                    if a.currency else None),
                 "description": a.description,
             }
             for a in accounts
         ], indent=2))
         return 0
-    table = Table(headers=["Account", "Type", "Flags", "Balance"],
-                  align="lllr")
+    has_foreign = any(a.currency for a in accounts)
+    headers = ["Account", "Type", "Flags", "Balance"]
+    if has_foreign:
+        headers.append("Foreign")
+    table = Table(headers=headers, align="lllrr")
     for a in accounts:
         flags = ",".join(
             f for f in ("cash" if a.is_cash else "",
                         "closed" if a.closed else "",
                         a.cf_category or "") if f
         )
-        table.add(a.name, a.type.value, flags,
-                  money(raw.get(a.id, 0) * a.type.natural_sign, led.decimals))
+        cells = [a.name, a.type.value, flags,
+                 money(raw.get(a.id, 0) * a.type.natural_sign, led.decimals)]
+        if has_foreign:
+            cells.append(
+                format_amount(foreign.get(a.id, 0) * a.type.natural_sign,
+                              currency_decimals(a.currency),
+                              currency_symbol(a.currency))
+                if a.currency else "")
+        table.add(*cells)
     print(table.render())
     return 0
 
@@ -203,16 +228,19 @@ def cmd_account_modify(args) -> int:
 
 
 def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
-    """Turn --post [ACCOUNT, AMOUNT?] specs into balanced postings; one
-    spec may omit its amount to become the balancing leg."""
+    """Turn --post [ACCOUNT, AMOUNT?, FOREIGN?] specs into balanced
+    postings; one spec may omit its amount to become the balancing leg.
+    The third element gives the foreign amount for postings on
+    foreign-denominated accounts (otherwise derived from the rate)."""
     postings: list[Posting] = []
     balancing: Posting | None = None
     total = 0
     for spec in specs:
-        if len(spec) > 2:
+        if len(spec) > 3:
             raise BeansError(
-                f"--post takes an account and an optional amount, got: "
-                f"{' '.join(spec)} (quote account names with spaces)"
+                f"--post takes an account, an optional amount, and an "
+                f"optional foreign amount, got: {' '.join(spec)} "
+                "(quote account names with spaces)"
             )
         account = led.find_account(spec[0])
         if account.closed:
@@ -225,11 +253,23 @@ def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
             balancing = Posting(account_id=account.id, amount=0,
                                 account_name=account.name)
             postings.append(balancing)
-        else:
-            amount = parse_amount(spec[1], led.decimals)
-            total += amount
-            postings.append(Posting(account_id=account.id, amount=amount,
-                                    account_name=account.name))
+            continue
+        amount = parse_amount(spec[1], led.decimals)
+        foreign = None
+        if len(spec) == 3:
+            if not account.currency:
+                raise BeansError(
+                    f"{account.name} is a base-currency account — a "
+                    "foreign amount does not apply"
+                )
+            # The foreign amount always moves with the base amount.
+            foreign = abs(parse_amount(
+                spec[2], currency_decimals(account.currency)))
+            foreign = foreign if amount >= 0 else -foreign
+        total += amount
+        postings.append(Posting(account_id=account.id, amount=amount,
+                                account_name=account.name,
+                                foreign_amount=foreign))
     if balancing is not None:
         balancing.amount = -total
     return postings
@@ -273,10 +313,27 @@ def _simple_transaction(args, debit_q: str, credit_q: str,
         raise BeansError("amount must be positive")
     debit = led.find_account(debit_q)
     credit = led.find_account(credit_q)
+    postings = [Posting(account_id=debit.id, amount=amount),
+                Posting(account_id=credit.id, amount=-amount)]
+    foreign_text = getattr(args, "foreign", None)
+    if foreign_text:
+        targets = [(p, a) for p, a in zip(postings, (debit, credit))
+                   if a.currency]
+        if len(targets) != 1:
+            raise BeansError(
+                "--foreign needs exactly one leg on a foreign-currency "
+                "account" if not targets else
+                "--foreign is ambiguous: both accounts are "
+                "foreign-denominated (use `beans tx add` with explicit "
+                "foreign amounts)"
+            )
+        posting, account = targets[0]
+        foreign = abs(parse_amount(foreign_text,
+                                   currency_decimals(account.currency)))
+        posting.foreign_amount = (foreign if posting.amount >= 0
+                                  else -foreign)
     txn = led.add_transaction(
-        when, desc,
-        [Posting(account_id=debit.id, amount=amount),
-         Posting(account_id=credit.id, amount=-amount)],
+        when, desc, postings,
         payee=getattr(args, "payee", "") or "",
     )
     print(f"Recorded transaction #{txn.id}: {when.isoformat()}  {desc}  "
@@ -828,6 +885,105 @@ def cmd_price_list(args) -> int:
     return 0
 
 
+def cmd_currency_set(args) -> int:
+    led = _open(args)
+    rate = parse_fx_rate(args.rate)
+    when = parse_date(args.date, default=date.today())
+    led.set_fx_rate(args.code, when, rate)
+    print(f"1 {args.code.upper()} = {rate} {led.currency} "
+          f"as of {when.isoformat()}")
+    return 0
+
+
+def cmd_currency_list(args) -> int:
+    led = _open(args)
+    data = fx.currencies_report(led)
+    if args.json:
+        # Serialized by hand: foreign_balance is in the *foreign*
+        # currency's minor units, so the generic base-decimals
+        # conversion would mangle 0-decimal currencies like JPY.
+        def major(minor, decimals):
+            return (reports.to_major(minor, decimals)
+                    if minor is not None else None)
+
+        print(json.dumps({
+            "report": data["report"],
+            "as_of": data["as_of"].isoformat(),
+            "base_currency": data["base_currency"],
+            "rows": [
+                {
+                    "account": row["account"],
+                    "currency": row["currency"],
+                    "foreign_balance": major(
+                        row["foreign_balance"],
+                        currency_decimals(row["currency"])),
+                    "book": major(row["book"], led.decimals),
+                    "rate": row["rate"],
+                    "rate_date": (row["rate_date"].isoformat()
+                                  if row["rate_date"] else None),
+                    "market": major(row["market"], led.decimals),
+                    "unrealized": major(row["unrealized"], led.decimals),
+                }
+                for row in data["rows"]
+            ],
+        }, indent=2))
+        return 0
+    print(fx.render_currencies(data, led.decimals, _symbol(led)))
+    return 0
+
+
+def cmd_currency_rates(args) -> int:
+    led = _open(args)
+    rows = led.fx_rates(code=args.code)
+    if args.json:
+        print(json.dumps([
+            {"currency": r["currency"], "date": r["date"], "rate": r["rate"]}
+            for r in rows
+        ], indent=2))
+        return 0
+    if not rows:
+        print("No exchange rates recorded. Add one with: "
+              "beans currency set EUR 1.0832")
+        return 0
+    table = Table(headers=["Currency", "Date",
+                           f"Rate ({led.currency} per unit)"], align="llr")
+    for r in rows:
+        table.add(r["currency"], r["date"], r["rate"])
+    print(table.render())
+    return 0
+
+
+def cmd_currency_revalue(args) -> int:
+    led = _open(args)
+    when = parse_date(args.date, default=date.today())
+    data = fx.revalue(led, when, dry_run=args.dry_run)
+    _emit(args, led, data, fx.render_revalue)
+    return 0
+
+
+def cmd_export(args) -> int:
+    led = _open(args)
+    if args.format == "json":
+        content = json.dumps(export.export_json(led), indent=2) + "\n"
+    else:
+        content = export.export_csv(led)
+    if args.output:
+        path = Path(args.output).expanduser()
+        path.write_text(content)
+        print(f"Exported {args.format.upper()} to {path}")
+    else:
+        print(content, end="")
+    return 0
+
+
+def cmd_backup(args) -> int:
+    led = _open(args)
+    path = export.backup(led, args.dest)
+    print(f"Backed up ledger to {path}")
+    print(f"Restore by pointing beans at it: beans -f {path} status")
+    return 0
+
+
 def cmd_completions(args) -> int:
     parser = build_parser()
     command_map = {}
@@ -897,6 +1053,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cashflow", choices=["operating", "investing",
                                           "financing"],
                    help="override the cash-flow statement activity")
+    p.add_argument("--currency", metavar="CODE",
+                   help="denominate in a foreign currency (assets and "
+                        "liabilities only), e.g. EUR")
     p.add_argument("--desc", default="", help="description")
     p.set_defaults(func=cmd_account_add)
     p = account_sub.add_parser("list", help="list accounts with balances")
@@ -937,10 +1096,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag", action="append", default=[],
                    help="tag (repeatable)")
     p.add_argument("--post", nargs="+", action="append",
-                   metavar=("ACCOUNT [AMOUNT]", ""),
+                   metavar=("ACCOUNT [AMOUNT] [FOREIGN]", ""),
                    help="posting: account and amount; positive = debit, "
                         "negative = credit; omit the amount on one posting "
-                        "to auto-balance (repeatable)")
+                        "to auto-balance; a third value gives the foreign "
+                        "amount for foreign-currency accounts (repeatable)")
     p.add_argument("--like", type=int, metavar="ID",
                    help="clone postings/description from transaction ID "
                         "(override with --date/--desc/--payee)")
@@ -970,6 +1130,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--desc", "-m", help="description")
     p.add_argument("--payee")
     p.add_argument("--date", "-d")
+    p.add_argument("--foreign", metavar="AMOUNT",
+                   help="exact foreign amount when one leg is on a "
+                        "foreign-currency account")
     p.set_defaults(func=cmd_spend)
     p = sub.add_parser("earn", help="record income")
     p.add_argument("amount")
@@ -979,6 +1142,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "or Checking)")
     p.add_argument("--desc", "-m")
     p.add_argument("--date", "-d")
+    p.add_argument("--foreign", metavar="AMOUNT",
+                   help="exact foreign amount when one leg is on a "
+                        "foreign-currency account")
     p.set_defaults(func=cmd_earn)
     p = sub.add_parser("transfer", help="move money between accounts")
     p.add_argument("amount")
@@ -986,6 +1152,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", metavar="to")
     p.add_argument("--desc", "-m")
     p.add_argument("--date", "-d")
+    p.add_argument("--foreign", metavar="AMOUNT",
+                   help="exact foreign amount when one leg is on a "
+                        "foreign-currency account (e.g. EUR received)")
     p.set_defaults(func=cmd_transfer)
 
     p = sub.add_parser("register",
@@ -1294,6 +1463,50 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("symbol", nargs="?")
     _add_json_arg(p)
     p.set_defaults(func=cmd_price_list)
+
+    # currency
+    p_currency = sub.add_parser(
+        "currency", help="exchange rates and FX revaluation")
+    currency_sub = p_currency.add_subparsers(dest="subcommand",
+                                             metavar="subcommand")
+    p = currency_sub.add_parser(
+        "set", help="record an exchange rate",
+        epilog="Example: beans currency set EUR 1.0832 "
+               "(base units per 1 EUR)",
+    )
+    p.add_argument("code", help="ISO currency code, e.g. EUR")
+    p.add_argument("rate", help="base-currency units per one foreign unit")
+    p.add_argument("--date", "-d", help="default: today")
+    p.set_defaults(func=cmd_currency_set)
+    p = currency_sub.add_parser(
+        "list", help="foreign accounts with balances and unrealized FX")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_currency_list)
+    p = currency_sub.add_parser("rates", help="recorded exchange rates")
+    p.add_argument("code", nargs="?")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_currency_rates)
+    p = currency_sub.add_parser(
+        "revalue",
+        help="post FX adjustments so book value matches the current rate")
+    p.add_argument("--date", "-d")
+    p.add_argument("--dry-run", action="store_true")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_currency_revalue)
+
+    p = sub.add_parser("export", help="export the full ledger")
+    p.add_argument("format", choices=["json", "csv"],
+                   help="json: everything; csv: one row per posting")
+    p.add_argument("--output", "-o", metavar="FILE",
+                   help="write to a file instead of stdout")
+    p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("backup",
+                       help="consistent point-in-time copy of the ledger")
+    p.add_argument("dest", nargs="?",
+                   help="file or directory (default: alongside the ledger, "
+                        "timestamped)")
+    p.set_defaults(func=cmd_backup)
 
     p = sub.add_parser("completions",
                        help="print a shell completion script")
