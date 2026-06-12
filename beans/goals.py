@@ -78,7 +78,7 @@ def render_goals(data: dict, decimals: int, symbol: str) -> str:
                          f"{money(row['target'], decimals, symbol)} "
                          f"by {row['target_date'].isoformat()}")
         else:
-            lines.append(f"  {money(row['balance'], decimals, symbol)} "
+            lines.append(f"  {money(row['remaining'], decimals, symbol)} "
                          f"remaining, due {row['target_date'].isoformat()}")
         if row["on_track"]:
             lines.append(green("  Reached!"))

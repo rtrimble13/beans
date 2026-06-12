@@ -53,6 +53,7 @@ def _recurring_projections(
     for rec in led.recurrings():
         if not rec.active:
             continue
+        # pending_occurrences carries the MAX_RUN_PER_RULE runaway guard.
         for due in pending_occurrences(rec, horizon_end):
             idx = key_index.get(f"{due:%Y-%m}")
             if idx is None:
