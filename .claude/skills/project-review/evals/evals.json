@@ -1,0 +1,68 @@
+{
+  "skill_name": "project-review",
+  "evals": [
+    {
+      "id": 0,
+      "name": "prioritized-backlog",
+      "prompt": "Review this whole project and give me a prioritized backlog of what to fix.",
+      "expected_output": "docs/project_review_<date>.md with the 5-section structure; numbered, capped, PR-ready backlog files under backlog/; findings cite path:line; ranked by impact x effort priority tiers (not flat severity); feature ideas quarantined; source unmodified.",
+      "files": [
+        "fixtures/task-tracker"
+      ],
+      "assertions": [
+        "Report exists at docs/project_review_<YYYYMMDD>.md",
+        "Report contains all 5 required sections",
+        "Backlog files are zero-padded NNN-slug and capped at <=15",
+        "Findings cite path:line evidence",
+        "Uses impact x effort priority tiers (P0-P3 + Impact/Effort), not flat severity",
+        "SQL injection identified and ranked P0/Critical",
+        "New-feature ideas quarantined in their section, evidence-cited, no feature backlog doc",
+        "Backlog files are PR-ready (Problem/Why/Proposed/Acceptance/Risk)",
+        "Defect findings carry severity tags (Critical/High/Medium/Low)",
+        "Findings include confidence levels"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "techdebt-sprint-focus",
+      "prompt": "I'm about to spend a sprint on tech debt \u2014 where should I focus?",
+      "expected_output": "Same artifacts; should exercise impact x effort ranking and the backlog cap; high-ROI (high-impact/low-effort) items surfaced near the top.",
+      "files": [
+        "fixtures/task-tracker"
+      ],
+      "assertions": [
+        "Report exists at docs/project_review_<YYYYMMDD>.md",
+        "Report contains all 5 required sections",
+        "Backlog files are zero-padded NNN-slug and capped at <=15",
+        "Findings cite path:line evidence",
+        "Uses impact x effort priority tiers (P0-P3 + Impact/Effort), not flat severity",
+        "SQL injection identified and ranked P0/Critical",
+        "New-feature ideas quarantined in their section, evidence-cited, no feature backlog doc",
+        "Backlog files are PR-ready (Problem/Why/Proposed/Acceptance/Risk)",
+        "Defect findings carry severity tags (Critical/High/Medium/Low)",
+        "Findings include confidence levels"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "hidden-bugs-robustness",
+      "prompt": "Are there hidden bugs in this codebase, and is the design robust?",
+      "expected_output": "Defect-focused: surfaces SQL injection, missing-field/None crashes, resource leak, swallowed errors, SPOF; uses severity tags + honest confidence; does NOT pad with feature ideas.",
+      "files": [
+        "fixtures/task-tracker"
+      ],
+      "assertions": [
+        "Report exists at docs/project_review_<YYYYMMDD>.md",
+        "Report contains all 5 required sections",
+        "Backlog files are zero-padded NNN-slug and capped at <=15",
+        "Findings cite path:line evidence",
+        "Uses impact x effort priority tiers (P0-P3 + Impact/Effort), not flat severity",
+        "SQL injection identified and ranked P0/Critical",
+        "New-feature ideas quarantined in their section, evidence-cited, no feature backlog doc",
+        "Backlog files are PR-ready (Problem/Why/Proposed/Acceptance/Risk)",
+        "Defect findings carry severity tags (Critical/High/Medium/Low)",
+        "Findings include confidence levels"
+      ]
+    }
+  ]
+}
