@@ -178,6 +178,38 @@ def test_budget_cycle(capsys, ledger_file):
     assert row["actual"] == "300.00"
 
 
+def test_export_json_then_restore_round_trip(capsys, ledger_file, tmp_path):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "Opening", "--post", "Assets:Checking", "5000",
+        "--post", "Equity:Opening Balances")
+    run(capsys, ledger_file, "spend", "1800", "Rent", "--date", "2026-02-01")
+    out_file = str(tmp_path / "ledger.json")
+    code, _, _ = run(capsys, ledger_file, "export", "json", "-o", out_file)
+    assert code == 0
+
+    restored = str(tmp_path / "restored.db")
+    code, out, _ = run(capsys, restored, "restore", out_file)
+    assert code == 0
+    assert "Restored ledger" in out
+
+    # The restored ledger reports the same balance sheet.
+    code, src, _ = run(capsys, ledger_file, "report", "balance",
+                       "--date", "2026-12-31", "--json")
+    code, dst, _ = run(capsys, restored, "report", "balance",
+                       "--date", "2026-12-31", "--json")
+    assert json.loads(dst)["net_worth"] == json.loads(src)["net_worth"]
+    assert json.loads(dst)["balanced"] is True
+
+
+def test_restore_into_existing_ledger_fails(capsys, ledger_file, tmp_path):
+    out_file = str(tmp_path / "ledger.json")
+    run(capsys, ledger_file, "export", "json", "-o", out_file)
+    # ledger_file is already initialized -> restore must refuse.
+    code, _, err = run(capsys, ledger_file, "restore", out_file)
+    assert code == 1
+    assert "already initialized" in err
+
+
 def test_forecast_runs(capsys, ledger_file):
     run(capsys, ledger_file, "budget", "set", "Groceries", "500")
     run(capsys, ledger_file, "budget", "set", "Salary", "4000")

@@ -21,6 +21,7 @@ from beans import (
     reconcile,
     recurring,
     reports,
+    restore,
     status,
 )
 from beans.importer import import_csv
@@ -977,6 +978,24 @@ def cmd_backup(args) -> int:
     return 0
 
 
+def cmd_restore(args) -> int:
+    path = ledger_path(args.file)
+    file = Path(args.jsonfile).expanduser()
+    if not file.exists():
+        raise BeansError(f"file not found: {args.jsonfile}")
+    try:
+        data = json.loads(file.read_text())
+    except json.JSONDecodeError as exc:
+        raise BeansError(f"{args.jsonfile}: invalid JSON ({exc})")
+    led = _open(args, create=True)
+    summary = restore.restore_ledger(led, data)
+    print(f"Restored ledger at {path} ({led.currency}):")
+    for key in restore.SUMMARY_KEYS:
+        if summary.get(key):
+            print(f"  {summary[key]} {key.replace('_', ' ')}")
+    return 0
+
+
 def cmd_completions(args) -> int:
     parser = build_parser()
     command_map = {}
@@ -1500,6 +1519,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="file or directory (default: alongside the ledger, "
                         "timestamped)")
     p.set_defaults(func=cmd_backup)
+
+    p = sub.add_parser("restore",
+                       help="rebuild a ledger from a `beans export json` file")
+    p.add_argument("jsonfile", metavar="FILE",
+                   help="a JSON document produced by `beans export json`")
+    p.set_defaults(func=cmd_restore)
 
     p = sub.add_parser("completions",
                        help="print a shell completion script")
