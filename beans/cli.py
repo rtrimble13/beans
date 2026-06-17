@@ -37,6 +37,7 @@ from beans.utils import (
     parse_date,
     parse_fx_rate,
     parse_period,
+    signed_foreign,
 )
 
 PROG = "beans"
@@ -227,13 +228,6 @@ def cmd_account_modify(args) -> int:
     return 0
 
 
-def _signed_foreign(text: str, base_amount: int, code: str) -> int:
-    """Parse a foreign amount as a magnitude, then re-sign it to track the
-    base leg: the foreign amount always moves with the base amount."""
-    mag = abs(parse_amount(text, currency_decimals(code)))
-    return mag if base_amount >= 0 else -mag
-
-
 def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
     """Turn --post [ACCOUNT, AMOUNT?, FOREIGN?] specs into balanced
     postings; one spec may omit its amount to become the balancing leg.
@@ -269,7 +263,7 @@ def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
                     f"{account.name} is a base-currency account — a "
                     "foreign amount does not apply"
                 )
-            foreign = _signed_foreign(spec[2], amount, account.currency)
+            foreign = signed_foreign(spec[2], amount, account.currency)
         total += amount
         postings.append(Posting(account_id=account.id, amount=amount,
                                 account_name=account.name,
@@ -332,7 +326,7 @@ def _simple_transaction(args, debit_q: str, credit_q: str,
                 "foreign amounts)"
             )
         posting, account = targets[0]
-        posting.foreign_amount = _signed_foreign(
+        posting.foreign_amount = signed_foreign(
             foreign_text, posting.amount, account.currency)
     txn = led.add_transaction(
         when, desc, postings,
