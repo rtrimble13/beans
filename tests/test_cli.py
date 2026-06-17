@@ -98,6 +98,46 @@ def test_two_balancing_postings_rejected(capsys, ledger_file):
     assert "balancing" in err
 
 
+def test_no_write_path_posts_to_a_closed_account(capsys, ledger_file):
+    # Record then reverse an Entertainment expense so it can be closed at a
+    # zero balance, and capture a transaction id to clone via --like.
+    code, out, _ = run(capsys, ledger_file, "tx", "add", "--desc", "movie",
+                       "--date", "2026-01-01",
+                       "--post", "Expenses:Entertainment", "20",
+                       "--post", "Assets:Checking", "-20")
+    assert code == 0
+    like_id = out.split("#")[1].split()[0]
+    code, _, _ = run(capsys, ledger_file, "tx", "add", "--desc", "refund",
+                     "--date", "2026-01-02",
+                     "--post", "Assets:Checking", "20",
+                     "--post", "Expenses:Entertainment", "-20")
+    assert code == 0
+    code, _, _ = run(capsys, ledger_file, "account", "close",
+                     "Expenses:Entertainment")
+    assert code == 0
+
+    # Every write path must reject the closed account with the same message.
+    code, _, err = run(capsys, ledger_file, "spend", "5", "Entertainment")
+    assert code == 1 and "Expenses:Entertainment is closed" in err
+
+    code, _, err = run(capsys, ledger_file, "tx", "add", "--desc", "x",
+                       "--post", "Expenses:Entertainment", "5",
+                       "--post", "Assets:Checking", "-5")
+    assert code == 1 and "Expenses:Entertainment is closed" in err
+
+    code, _, err = run(capsys, ledger_file, "tx", "add", "--like", like_id,
+                       "--date", "2026-03-01")
+    assert code == 1 and "Expenses:Entertainment is closed" in err
+
+
+def test_transfer_to_closed_account_rejected(capsys, ledger_file):
+    code, _, _ = run(capsys, ledger_file, "account", "close", "Assets:Savings")
+    assert code == 0
+    code, _, err = run(capsys, ledger_file, "transfer", "100",
+                       "Checking", "Savings")
+    assert code == 1 and "Assets:Savings is closed" in err
+
+
 def test_void_and_list(capsys, ledger_file):
     run(capsys, ledger_file, "earn", "100", "Salary", "--date", "2026-01-01")
     code, _, _ = run(capsys, ledger_file, "tx", "void", "1")

@@ -81,6 +81,23 @@ def test_close_account_requires_zero_balance(led):
     assert led.find_account("Assets:Checking").closed
 
 
+def test_add_transaction_rejects_closed_account(led):
+    # Closing requires a zero balance; drain Entertainment to zero, close
+    # it, then prove the ledger itself blocks any posting to it.
+    ent = led.find_account("Expenses:Entertainment")
+    post(led, date(2026, 1, 1), "movie",
+         ("Expenses:Entertainment", 2000), ("Assets:Checking", -2000))
+    post(led, date(2026, 1, 2), "refund",
+         ("Assets:Checking", 2000), ("Expenses:Entertainment", -2000))
+    led.close_account(ent)
+    checking = led.find_account("Assets:Checking")
+    with pytest.raises(BeansError, match="Expenses:Entertainment is closed"):
+        led.add_transaction(date(2026, 3, 1), "movie", [
+            Posting(account_id=ent.id, amount=2000),
+            Posting(account_id=checking.id, amount=-2000),
+        ])
+
+
 def test_duplicate_account_rejected(led):
     with pytest.raises(BeansError, match="already exists"):
         led.add_account("Assets:Checking", AccountType.ASSET)

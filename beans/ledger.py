@@ -457,6 +457,24 @@ class Ledger:
         if any(p.amount == 0 for p in postings):
             raise BeansError("postings must have a non-zero amount")
 
+    def _check_accounts_open(self, postings: list[Posting]) -> None:
+        """Reject any posting to a closed account. Enforced here in the
+        ledger so every write path (tx add, --like, spend/earn/transfer,
+        and system-posted adjustments) inherits the invariant, rather
+        than only the one CLI helper that happened to check it."""
+        ids = [p.account_id for p in postings]
+        closed = {
+            r["id"]: r["name"]
+            for r in self.db.execute(
+                f"SELECT id, name FROM accounts WHERE closed = 1 AND id IN "
+                f"({','.join('?' * len(ids))})",
+                ids,
+            )
+        }
+        for p in postings:
+            if p.account_id in closed:
+                raise BeansError(f"account {closed[p.account_id]} is closed")
+
     def _derive_foreign_amounts(self, postings: list[Posting],
                                 when: date) -> None:
         """Fill in foreign_amount for postings on foreign-denominated
@@ -528,6 +546,7 @@ class Ledger:
         tags: list[str] | None = None,
     ) -> Transaction:
         self._check_postings(postings)
+        self._check_accounts_open(postings)
         self._check_not_closed(when, "record a transaction")
         tags = tags or []
         with self.db:
