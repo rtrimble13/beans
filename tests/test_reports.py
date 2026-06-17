@@ -34,6 +34,30 @@ def test_income_statement(led):
     assert data["income"]["Income:Salary"] == 500000
 
 
+def test_income_statement_compare_bounded_period(led):
+    seed(led)
+    data = reports.income_statement(
+        led, date(2026, 4, 1), date(2026, 6, 30), "2026-Q2", compare=True)
+    # A bounded period gets a real prior-period comparison block.
+    assert "compare" in data
+    assert "compare_note" not in data
+    assert data["compare"]["period"]  # prior period label is populated
+
+
+def test_income_statement_compare_unbounded_degrades(led):
+    seed(led)
+    # --period all resolves start=None; comparing has no prior period, so it
+    # must degrade with a note rather than raising (issue #12).
+    data = reports.income_statement(
+        led, None, date(2026, 12, 31), "all time", compare=True)
+    assert "compare" not in data
+    assert "compare_note" in data
+    assert "unbounded period" in data["compare_note"]
+    # The note renders into the text output; the report still produced.
+    text = reports.render_income_statement(data, 2, "$")
+    assert "comparison unavailable" in text
+
+
 def test_balance_sheet_balances(led):
     seed(led)
     data = reports.balance_sheet(led, date(2026, 12, 31))
