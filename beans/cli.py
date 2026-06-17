@@ -243,8 +243,6 @@ def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
                 "(quote account names with spaces)"
             )
         account = led.find_account(spec[0])
-        if account.closed:
-            raise BeansError(f"account {account.name} is closed")
         if len(spec) == 1:
             if balancing is not None:
                 raise BeansError(
