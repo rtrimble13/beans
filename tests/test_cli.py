@@ -244,6 +244,21 @@ def test_recurring_cycle(capsys, ledger_file):
     assert json.loads(out)["total_expenses"] == "5400.00"
 
 
+def test_report_income_all_compare_does_not_error(capsys, ledger_file):
+    # Regression for #12: --period all + --compare used to hard-error with a
+    # non-zero exit; it must now exit 0 and emit the degrade note.
+    run(capsys, ledger_file, "earn", "6000", "Salary", "--date", "2026-01-15")
+    code, out, _ = run(capsys, ledger_file, "report", "income",
+                       "--period", "all", "--compare")
+    assert code == 0
+    assert "comparison unavailable" in out
+    code, out, _ = run(capsys, ledger_file, "report", "income",
+                       "--period", "all", "--compare", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert "compare" not in data and "compare_note" in data
+
+
 def test_undo(capsys, ledger_file):
     run(capsys, ledger_file, "earn", "100", "Salary", "--date", "2026-01-01")
     run(capsys, ledger_file, "earn", "200", "Salary", "--date", "2026-01-02")
