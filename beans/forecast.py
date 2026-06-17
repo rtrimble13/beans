@@ -30,7 +30,9 @@ def _project(history: list[int], method: str, steps: int) -> list[int]:
     if method == "average" or len(history) < 2:
         avg = round(sum(history) / len(history))
         return [avg] * steps
-    # Least-squares fit of flow against month index, extrapolated.
+    # Least-squares fit of flow against month index, extrapolated. The
+    # fitted line is y = mean_y + slope * (x - mean_x); future month x is
+    # (n - 1 + step), so the offset from the mean must subtract mean_x.
     n = len(history)
     xs = range(n)
     mean_x = (n - 1) / 2
@@ -38,7 +40,8 @@ def _project(history: list[int], method: str, steps: int) -> list[int]:
     denom = sum((x - mean_x) ** 2 for x in xs)
     slope = sum((x - mean_x) * (y - mean_y)
                 for x, y in zip(xs, history)) / denom
-    return [round(mean_y + slope * (n - 1 + step)) for step in range(1, steps + 1)]
+    return [round(mean_y + slope * (n - 1 + step - mean_x))
+            for step in range(1, steps + 1)]
 
 
 def _recurring_projections(
