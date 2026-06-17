@@ -11,7 +11,19 @@ from beans.utils import (
     parse_date,
     parse_period,
     prior_period,
+    signed_foreign,
 )
+
+
+def test_signed_foreign_tracks_base_sign():
+    # Magnitude is parsed at the foreign currency's precision, then signed to
+    # match the base leg: positive base -> positive foreign, negative -> neg.
+    assert signed_foreign("1000", 110000, "EUR") == 100000
+    assert signed_foreign("1000", -110000, "EUR") == -100000
+    # A magnitude given with its own sign is normalized to the base leg's.
+    assert signed_foreign("-1000", 110000, "EUR") == 100000
+    # JPY has 0 decimals: no scaling, sign still follows the base leg.
+    assert signed_foreign("1000000", -67000, "JPY") == -1000000
 
 
 def test_parse_amount():

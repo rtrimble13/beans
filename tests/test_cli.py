@@ -88,6 +88,23 @@ def test_balancing_posting(capsys, ledger_file):
     assert amounts["Income:Salary"] == "-5000.00"
 
 
+def test_foreign_amount_tracks_negative_base_leg(capsys, ledger_file):
+    # A foreign posting on a credit (negative) leg must carry a negative
+    # foreign amount: _signed_foreign re-signs the magnitude to the base leg.
+    run(capsys, ledger_file, "account", "add", "Assets:EUR Savings",
+        "--type", "asset", "--currency", "EUR")
+    run(capsys, ledger_file, "currency", "set", "EUR", "1.10",
+        "--date", "2026-01-01")
+    code, _, _ = run(capsys, ledger_file, "tx", "add", "--desc", "drawdown",
+                     "--date", "2026-02-01",
+                     "--post", "Assets:EUR Savings", "-1100", "1000",
+                     "--post", "Assets:Checking", "1100")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "account", "list", "--json")
+    eur = {a["name"]: a for a in json.loads(out)}["Assets:EUR Savings"]
+    assert eur["foreign_balance"] == "-1000.00"
+
+
 def test_two_balancing_postings_rejected(capsys, ledger_file):
     code, _, err = run(
         capsys, ledger_file, "tx", "add", "--desc", "bad",

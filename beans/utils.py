@@ -102,6 +102,13 @@ def parse_amount(text: str, decimals: int = 2) -> int:
     return int(scaled)
 
 
+def signed_foreign(text: str, base_amount: int, code: str) -> int:
+    """Parse a foreign amount as a magnitude, then re-sign it to track the
+    base leg: the foreign amount always moves with the base amount."""
+    mag = abs(parse_amount(text, currency_decimals(code)))
+    return mag if base_amount >= 0 else -mag
+
+
 def format_amount(minor: int, decimals: int = 2, symbol: str = "") -> str:
     """Format integer minor units as a human-readable money string."""
     sign = "-" if minor < 0 else ""

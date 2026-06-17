@@ -37,6 +37,7 @@ from beans.utils import (
     parse_date,
     parse_fx_rate,
     parse_period,
+    signed_foreign,
 )
 
 PROG = "beans"
@@ -265,10 +266,7 @@ def _parse_postings(led: Ledger, specs: list[list[str]]) -> list[Posting]:
                     f"{account.name} is a base-currency account — a "
                     "foreign amount does not apply"
                 )
-            # The foreign amount always moves with the base amount.
-            foreign = abs(parse_amount(
-                spec[2], currency_decimals(account.currency)))
-            foreign = foreign if amount >= 0 else -foreign
+            foreign = signed_foreign(spec[2], amount, account.currency)
         total += amount
         postings.append(Posting(account_id=account.id, amount=amount,
                                 account_name=account.name,
@@ -331,10 +329,8 @@ def _simple_transaction(args, debit_q: str, credit_q: str,
                 "foreign amounts)"
             )
         posting, account = targets[0]
-        foreign = abs(parse_amount(foreign_text,
-                                   currency_decimals(account.currency)))
-        posting.foreign_amount = (foreign if posting.amount >= 0
-                                  else -foreign)
+        posting.foreign_amount = signed_foreign(
+            foreign_text, posting.amount, account.currency)
     txn = led.add_transaction(
         when, desc, postings,
         payee=getattr(args, "payee", "") or "",
