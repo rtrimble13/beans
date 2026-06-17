@@ -317,6 +317,7 @@ rates while remaining balanced.
 beans export json -o ledger.json   # everything: accounts, transactions,
                                    # budgets, rules, goals, lots, rates
 beans export csv                   # one row per posting, for spreadsheets
+beans -f new.db restore ledger.json  # rebuild a ledger from a JSON export
 beans backup                       # timestamped copy next to the ledger
 beans backup ~/backups/            # ...or wherever you keep them
 ```
@@ -325,8 +326,17 @@ Both exports are complete: voided transactions are included (the CSV carries
 a `void` column, `1` for voided rows, alongside `cleared`), so your archived
 data matches the ledger rather than silently dropping voids.
 
+The JSON export round-trips: `beans -f new.db restore ledger.json` rebuilds a
+fresh ledger from it — accounts, transactions (with void/cleared flags and
+foreign amounts), budgets, rules, goals, lots, prices, and FX rates — by
+replaying them through the normal write path, so every transaction is
+re-validated to balance. It restores into an empty ledger only (it won't
+overwrite an initialized one), which makes it handy for moving a ledger
+between machines or restoring from a text backup.
+
 Backups use SQLite's online backup API, so they're consistent even if
-taken mid-write. Restore is just `beans -f backup.db`.
+taken mid-write. Restore the binary snapshot by just pointing at it
+(`beans -f backup.db`); use `restore` for the portable JSON form.
 
 Projects monthly income, expenses, net savings, cash position, and net worth,
 with a breakdown of which accounts drive the projection and from what basis
