@@ -210,6 +210,18 @@ def test_restore_into_existing_ledger_fails(capsys, ledger_file, tmp_path):
     assert "already initialized" in err
 
 
+def test_restore_failure_leaves_no_partial_ledger(capsys, tmp_path):
+    # A malformed export must not leave a half-built ledger file behind when
+    # restore created it fresh.
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"not": "a beans export"}')
+    target = tmp_path / "fresh.db"
+    code, _, err = run(capsys, str(target), "restore", str(bad))
+    assert code == 1
+    assert "not a beans export" in err
+    assert not target.exists()
+
+
 def test_forecast_runs(capsys, ledger_file):
     run(capsys, ledger_file, "budget", "set", "Groceries", "500")
     run(capsys, ledger_file, "budget", "set", "Salary", "4000")

@@ -987,8 +987,18 @@ def cmd_restore(args) -> int:
         data = json.loads(file.read_text())
     except json.JSONDecodeError as exc:
         raise BeansError(f"{args.jsonfile}: invalid JSON ({exc})")
+    preexisting = path.exists()
     led = _open(args, create=True)
-    summary = restore.restore_ledger(led, data)
+    try:
+        summary = restore.restore_ledger(led, data)
+    except BeansError:
+        # A failed restore into a freshly-created ledger leaves a partial
+        # file; remove it so the operation is a no-op rather than a stub.
+        # Never touch a ledger that was already there.
+        if not preexisting:
+            led.close()
+            path.unlink(missing_ok=True)
+        raise
     print(f"Restored ledger at {path} ({led.currency}):")
     for key in restore.SUMMARY_KEYS:
         if summary.get(key):
