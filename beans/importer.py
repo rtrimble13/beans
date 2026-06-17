@@ -6,14 +6,19 @@ order: the row's category column, then saved import rules matched
 against the description (`beans rule add "WHOLE FOODS" Groceries`),
 then the --category fallback.
 
-Rows that match an existing transaction (same date, account, and
-amount) are skipped by default, so re-importing overlapping bank
-exports is safe.
+Re-importing overlapping bank exports is safe: deduplication is
+count-aware. For each (date, account, amount) key it skips only as
+many rows as the ledger already holds for that key, so two genuinely
+distinct rows that share a date and amount (e.g. two $4.50 coffees on
+the same day) both import, while re-importing the same file is a
+no-op. The dry run applies the identical counting logic, so the
+preview always matches the real run.
 """
 
 from __future__ import annotations
 
 import csv
+from collections import Counter
 from pathlib import Path
 
 from beans.ledger import Ledger
@@ -21,14 +26,17 @@ from beans.models import Account, Posting
 from beans.utils import BeansError, parse_amount, parse_date
 
 
-def _is_duplicate(led: Ledger, when, account: Account, amount: int) -> bool:
-    row = led.db.execute(
-        "SELECT 1 FROM postings p JOIN transactions t ON t.id = p.txn_id "
-        "WHERE t.void = 0 AND t.date = ? AND p.account_id = ? "
-        "AND p.amount = ? LIMIT 1",
-        (when.isoformat(), account.id, amount),
-    ).fetchone()
-    return row is not None
+def _existing_counts(led: Ledger, account: Account) -> Counter:
+    """Count the non-void postings the ledger already holds for the target
+    account, grouped by (date, amount). One query, not one per row."""
+    rows = led.db.execute(
+        "SELECT t.date, p.amount, COUNT(*) "
+        "FROM postings p JOIN transactions t ON t.id = p.txn_id "
+        "WHERE t.void = 0 AND p.account_id = ? "
+        "GROUP BY t.date, p.amount",
+        (account.id,),
+    ).fetchall()
+    return Counter({(when, amount): count for when, amount, count in rows})
 
 
 def import_csv(
@@ -48,6 +56,13 @@ def import_csv(
         raise BeansError(f"file not found: {path}")
     imported, skipped = [], []
     rules = led.import_rules()  # fetched once, matched per row
+    # Count-aware dedupe: the ledger's existing per-key counts, plus a
+    # running tally of keys seen so far in this file. A row is a duplicate
+    # only once the running count catches up to what the ledger holds, so
+    # distinct same-day/same-amount rows survive and re-imports stay no-ops.
+    # Seeded and incremented identically in dry-run, so preview == real run.
+    ledger_counts = _existing_counts(led, account) if dedupe else Counter()
+    seen: Counter = Counter()
     with file.open(newline="") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
@@ -96,9 +111,13 @@ def import_csv(
                 "amount": amount,
                 "counter": counter.name,
             }
-            if dedupe and _is_duplicate(led, when, account, amount):
-                skipped.append(entry)
-                continue
+            if dedupe:
+                key = (when.isoformat(), amount)
+                already = seen[key] < ledger_counts[key]
+                seen[key] += 1
+                if already:
+                    skipped.append(entry)
+                    continue
             if not dry_run:
                 txn = led.add_transaction(when, desc, [
                     Posting(account_id=account.id, amount=amount),
