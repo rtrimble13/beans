@@ -78,6 +78,13 @@ def _emit(args, led: Ledger, data: dict, renderer) -> None:
         print(renderer(data, led.decimals, _symbol(led)))
 
 
+def _print_json(led: Ledger, data) -> None:
+    """Serialize a plain data structure through the shared jsonify pipeline:
+    integer minor-unit amounts become major-unit decimal strings, foreign
+    amounts wrapped in reports.Money render at their own precision."""
+    print(json.dumps(reports.jsonify(data, led.decimals), indent=2))
+
+
 def _print_transaction(led: Ledger, txn) -> None:
     flag = " (VOID)" if txn.void else ""
     header = f"#{txn.id}  {txn.date.isoformat()}  {txn.description}{flag}"
@@ -157,22 +164,20 @@ def cmd_account_list(args) -> int:
     raw = led.balances()
     foreign = led.foreign_balances()
     if args.json:
-        print(json.dumps([
+        _print_json(led, [
             {
                 "name": a.name, "type": a.type.value, "is_cash": a.is_cash,
                 "cashflow": a.cashflow, "closed": a.closed,
-                "balance": reports.to_major(
-                    raw.get(a.id, 0) * a.type.natural_sign, led.decimals),
+                "balance": raw.get(a.id, 0) * a.type.natural_sign,
                 "currency": a.currency,
                 "foreign_balance": (
-                    reports.to_major(
-                        foreign.get(a.id, 0) * a.type.natural_sign,
-                        currency_decimals(a.currency))
+                    reports.Money(foreign.get(a.id, 0) * a.type.natural_sign,
+                                  currency_decimals(a.currency))
                     if a.currency else None),
                 "description": a.description,
             }
             for a in accounts
-        ], indent=2))
+        ])
         return 0
     has_foreign = any(a.currency for a in accounts)
     headers = ["Account", "Type", "Flags", "Balance"]
@@ -552,11 +557,10 @@ def cmd_budget_list(args) -> int:
     led = _open(args)
     budgets = led.budgets()
     if args.json:
-        print(json.dumps([
-            {"account": a.name, "amount": reports.to_major(amt, led.decimals),
-             "period": period}
+        _print_json(led, [
+            {"account": a.name, "amount": amt, "period": period}
             for a, amt, period in budgets
-        ], indent=2))
+        ])
         return 0
     if not budgets:
         print("No budgets set. Add one with: "
@@ -754,10 +758,10 @@ def cmd_rule_list(args) -> int:
     led = _open(args)
     rules = led.import_rules()
     if args.json:
-        print(json.dumps([
+        _print_json(led, [
             {"id": rid, "pattern": pattern, "account": account.name}
             for rid, pattern, account in rules
-        ], indent=2))
+        ])
         return 0
     if not rules:
         print("No import rules. Add one with: "
@@ -868,11 +872,10 @@ def cmd_price_list(args) -> int:
     led = _open(args)
     rows = led.prices(symbol=args.symbol)
     if args.json:
-        print(json.dumps([
-            {"symbol": r["symbol"], "date": r["date"],
-             "price": reports.to_major(r["price"], led.decimals)}
+        _print_json(led, [
+            {"symbol": r["symbol"], "date": r["date"], "price": r["price"]}
             for r in rows
-        ], indent=2))
+        ])
         return 0
     if not rows:
         print("No prices recorded. Add one with: "
@@ -899,34 +902,29 @@ def cmd_currency_list(args) -> int:
     led = _open(args)
     data = fx.currencies_report(led)
     if args.json:
-        # Serialized by hand: foreign_balance is in the *foreign*
-        # currency's minor units, so the generic base-decimals
-        # conversion would mangle 0-decimal currencies like JPY.
-        def major(minor, decimals):
-            return (reports.to_major(minor, decimals)
-                    if minor is not None else None)
-
-        print(json.dumps({
+        # foreign_balance is in the *foreign* currency's minor units, so it
+        # is wrapped in reports.Money to render at that currency's precision
+        # (e.g. 0-decimal JPY); jsonify handles the rest.
+        _print_json(led, {
             "report": data["report"],
-            "as_of": data["as_of"].isoformat(),
+            "as_of": data["as_of"],
             "base_currency": data["base_currency"],
             "rows": [
                 {
                     "account": row["account"],
                     "currency": row["currency"],
-                    "foreign_balance": major(
+                    "foreign_balance": reports.Money(
                         row["foreign_balance"],
                         currency_decimals(row["currency"])),
-                    "book": major(row["book"], led.decimals),
+                    "book": row["book"],
                     "rate": row["rate"],
-                    "rate_date": (row["rate_date"].isoformat()
-                                  if row["rate_date"] else None),
-                    "market": major(row["market"], led.decimals),
-                    "unrealized": major(row["unrealized"], led.decimals),
+                    "rate_date": row["rate_date"],
+                    "market": row["market"],
+                    "unrealized": row["unrealized"],
                 }
                 for row in data["rows"]
             ],
-        }, indent=2))
+        })
         return 0
     print(fx.render_currencies(data, led.decimals, _symbol(led)))
     return 0
@@ -936,10 +934,10 @@ def cmd_currency_rates(args) -> int:
     led = _open(args)
     rows = led.fx_rates(code=args.code)
     if args.json:
-        print(json.dumps([
+        _print_json(led, [
             {"currency": r["currency"], "date": r["date"], "rate": r["rate"]}
             for r in rows
-        ], indent=2))
+        ])
         return 0
     if not rows:
         print("No exchange rates recorded. Add one with: "

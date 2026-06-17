@@ -150,3 +150,13 @@ def test_jsonify_converts_money(led):
     assert j["total_assets"] == "7700.00"
     assert j["balanced"] is True
     assert j["as_of"] == "2026-12-31"
+
+
+def test_jsonify_money_uses_embedded_precision():
+    # reports.Money carries its own decimals so foreign amounts render at
+    # the foreign currency's precision regardless of the base decimals.
+    data = {"base": 1100, "yen": reports.Money(1000000, 0),
+            "eur": reports.Money(100000, 2), "missing": reports.Money(None, 0)}
+    j = reports.jsonify(data, 2)
+    assert j == {"base": "11.00", "yen": "1000000",
+                 "eur": "1000.00", "missing": None}

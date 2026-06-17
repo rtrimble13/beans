@@ -22,6 +22,20 @@ def to_major(minor: int, decimals: int) -> str:
         Decimal(1).scaleb(-decimals) if decimals else Decimal(1)))
 
 
+class Money:
+    """A money amount in minor units carrying its own precision, for fields
+    denominated in a currency other than the ledger base (e.g. a foreign
+    balance in JPY). `jsonify` renders it at the embedded precision instead
+    of the base decimals, so per-currency money handling lives here in the
+    serializer rather than being re-implemented inline at each call site."""
+
+    __slots__ = ("minor", "decimals")
+
+    def __init__(self, minor: int | None, decimals: int):
+        self.minor = minor
+        self.decimals = decimals
+
+
 # Report-dict keys whose integer values are counts, not money.
 NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   "posted_count"}
@@ -29,9 +43,13 @@ NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
 
 def jsonify(value, decimals: int):
     """Convert a report dict for JSON output: every int is money in minor
-    units and becomes a major-unit decimal string (except known counts)."""
+    units and becomes a major-unit decimal string (except known counts).
+    A `Money` value carries its own precision (for foreign currencies)."""
     if isinstance(value, bool):
         return value
+    if isinstance(value, Money):
+        return (None if value.minor is None
+                else to_major(value.minor, value.decimals))
     if isinstance(value, int):
         return to_major(value, decimals)
     if isinstance(value, dict):

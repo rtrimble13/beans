@@ -374,6 +374,35 @@ def test_rule_cli_and_import(capsys, ledger_file, tmp_path):
     assert json.loads(out)[0]["pattern"] == "WHOLE FOODS"
 
 
+def test_list_commands_json_via_jsonify_pipeline(capsys, ledger_file):
+    # The list commands now serialize through reports.jsonify. Pin the
+    # money-as-decimal-string conversion and the count-vs-money distinction
+    # so the unified pipeline can't silently change the --json contract.
+    run(capsys, ledger_file, "budget", "set", "Groceries", "600")
+    run(capsys, ledger_file, "rule", "add", "WHOLE FOODS", "Groceries")
+    run(capsys, ledger_file, "price", "set", "VTI", "280",
+        "--date", "2026-01-01")
+    run(capsys, ledger_file, "currency", "set", "EUR", "1.10",
+        "--date", "2026-01-01")
+
+    code, out, _ = run(capsys, ledger_file, "budget", "list", "--json")
+    assert code == 0
+    assert json.loads(out) == [{"account": "Expenses:Food:Groceries",
+                                "amount": "600.00", "period": "monthly"}]
+
+    code, out, _ = run(capsys, ledger_file, "price", "list", "--json")
+    assert json.loads(out) == [{"symbol": "VTI", "date": "2026-01-01",
+                                "price": "280.00"}]
+
+    code, out, _ = run(capsys, ledger_file, "currency", "rates", "--json")
+    assert json.loads(out) == [{"currency": "EUR", "date": "2026-01-01",
+                                "rate": "1.10"}]
+
+    # rule id is a count, not money — it must stay an int, not "1.00".
+    code, out, _ = run(capsys, ledger_file, "rule", "list", "--json")
+    assert json.loads(out)[0]["id"] == 1
+
+
 def test_goal_cli(capsys, ledger_file):
     run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
         "--desc", "Opening", "--post", "Assets:Savings", "5000",
