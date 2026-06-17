@@ -54,19 +54,22 @@ was read but not exhaustively fuzzed.
 
 ## Findings (ranked by impact × effort, then severity)
 
+Backlog delivered as GitHub issues (issue-mode); links point to
+`rtrimble13/beans`.
+
 | # | Finding | Lens | Priority | Severity | Confidence |
 |---|---------|------|----------|----------|------------|
-| [001](../backlog/001-import-dedupe-silent-drop.md) | CSV import silently drops distinct same-day/same-amount rows; `--dry-run` disagrees with the real run | Robustness / Bug | **P1** | High | High (reproduced) |
-| [002](../backlog/002-closed-account-posting-guard.md) | `spend`/`earn`/`transfer` and `tx add --like` post to closed accounts that `tx add --post` rejects | Bug / Robustness | **P2** | Medium | High (reproduced) |
-| [003](../backlog/003-export-void-asymmetry.md) | `export csv` omits voided transactions and the void column; `export json` includes them — the two "whole ledger" exports disagree | Bug / Enhancement | **P2** | Medium | High |
-| [004](../backlog/004-consolidate-list-json.md) | Six `cmd_*_list` handlers hand-roll JSON instead of the `jsonify` path, duplicating serialization and risking drift | Refactoring | **P2** | — | High |
-| [005](../backlog/005-financial-math-tests.md) | Forecast `trend` (least-squares) and analysis ratios have no numeric assertions — only smoke tests | Refactoring / Testability | **P2** | — | Medium |
-| [006](../backlog/006-compare-all-period-ux.md) | `report income --period all --compare` hard-errors instead of degrading gracefully | Robustness / Enhancement | **P3** | Low | High |
-| [007](../backlog/007-dedupe-foreign-sign-helper.md) | Foreign-amount sign logic is duplicated in two CLI helpers | Refactoring | **P3** | — | High |
+| [#7](https://github.com/rtrimble13/beans/issues/7) | CSV import silently drops distinct same-day/same-amount rows; `--dry-run` disagrees with the real run | Robustness / Bug | **P1** | High | High (reproduced) |
+| [#8](https://github.com/rtrimble13/beans/issues/8) | `spend`/`earn`/`transfer` and `tx add --like` post to closed accounts that `tx add --post` rejects | Bug / Robustness | **P2** | Medium | High (reproduced) |
+| [#9](https://github.com/rtrimble13/beans/issues/9) | `export csv` omits voided transactions and the void column; `export json` includes them — the two "whole ledger" exports disagree | Bug / Enhancement | **P2** | Medium | High |
+| [#10](https://github.com/rtrimble13/beans/issues/10) | Six `cmd_*_list` handlers hand-roll JSON instead of the `jsonify` path, duplicating serialization and risking drift | Refactoring | **P2** | — | High |
+| [#11](https://github.com/rtrimble13/beans/issues/11) | Forecast `trend` (least-squares) and analysis ratios have no numeric assertions — only smoke tests | Refactoring / Testability | **P2** | — | Medium |
+| [#12](https://github.com/rtrimble13/beans/issues/12) | `report income --period all --compare` hard-errors instead of degrading gracefully | Robustness / Enhancement | **P3** | Low | High |
+| [#13](https://github.com/rtrimble13/beans/issues/13) | Foreign-amount sign logic is duplicated in two CLI helpers | Refactoring | **P3** | — | High |
 
 ### P1
 
-**[001] CSV import silently drops legitimately distinct transactions.**
+**[#7] CSV import silently drops legitimately distinct transactions.**
 `_is_duplicate` (`beans/importer.py:24`) matches on `(date, account_id, amount)`
 only, and is queried per-row against the live DB. Two genuine identical rows in
 one file — `2026-03-01,Coffee,-4.50` twice — import as **one** transaction: row 1
@@ -74,24 +77,24 @@ is written, row 2 then matches it and is skipped. Worse, `--dry-run` writes
 nothing, so both rows pass the check and the preview reports **2 imported** while
 the real run imports **1**. Reproduced: `DRY imported=2 skipped=0` vs
 `REAL imported=1 skipped=1`, one transaction in the ledger. For an accounting
-tool this is silent financial omission. See backlog for the count-based fix.
+tool this is silent financial omission. See the issue for the count-based fix.
 
 ### P2
 
-**[002] Closed-account guard is enforced inconsistently.** `tx add --post`
+**[#8] Closed-account guard is enforced inconsistently.** `tx add --post`
 rejects postings to closed accounts (`beans/cli.py:246`), but
 `_simple_transaction` (`spend`/`earn`/`transfer`, `beans/cli.py:305`) and the
 `tx add --like` clone path (`beans/cli.py:281`) never check `.closed`.
 Reproduced: a transaction posts cleanly to a closed account through the
 shortcut path. The guard belongs in `Ledger.add_transaction`, not the CLI.
 
-**[003] The two export formats disagree on what "the whole ledger" is.**
+**[#9] The two export formats disagree on what "the whole ledger" is.**
 `export_json` reads `transactions(include_void=True)` and emits a `void` field
 (`beans/export.py:82`); `export_csv` reads `transactions()` — void excluded —
 and has no void column (`beans/export.py:151`). A user exporting "everything" to
 CSV silently loses their voided history.
 
-**[004] List commands bypass the `jsonify` pipeline.** `cmd_account_list`,
+**[#10] List commands bypass the `jsonify` pipeline.** `cmd_account_list`,
 `cmd_budget_list`, `cmd_rule_list`, `cmd_price_list`, `cmd_currency_list`,
 `cmd_currency_rates` each hand-build their JSON (`beans/cli.py:159`, `554`,
 `756`, `870`, `901`, `938`), while every report command routes through
@@ -99,7 +102,7 @@ CSV silently loses their voided history.
 a special-case comment about JPY decimals — exactly the drift this duplication
 invites.
 
-**[005] The riskiest math is the least asserted.** `forecast._project`'s
+**[#11] The riskiest math is the least asserted.** `forecast._project`'s
 least-squares `trend` branch (`beans/forecast.py:27`) and `analysis.analyze`'s
 ratios (`beans/analysis.py:42`) are exercised only by smoke tests
 (`test_forecast_runs`, `test_analyze_runs`) that assert the command runs, not
@@ -108,12 +111,12 @@ green.
 
 ### P3
 
-**[006] `--compare` against an unbounded period throws.** `report income
+**[#12] `--compare` against an unbounded period throws.** `report income
 --period all --compare` calls `prior_period(None, end)`, which raises
 `BeansError` (`beans/utils.py:246`). It's a handled error, but the flag combo is
 silently incompatible; prefer degrading (skip the comparison with a note).
 
-**[007] Duplicated foreign-sign logic.** The "abs then re-sign to match the base
+**[#13] Duplicated foreign-sign logic.** The "abs then re-sign to match the base
 leg" idiom is copy-pasted in `_parse_postings` (`beans/cli.py:266`) and
 `_simple_transaction` (`beans/cli.py:331`). Extract a one-line helper.
 

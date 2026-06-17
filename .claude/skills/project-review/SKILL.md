@@ -173,34 +173,88 @@ review with low-signal noise. Constrain it hard:
 If the code gives you nothing concrete to point at, it is correct to leave this
 section nearly empty. Silence beats noise.
 
-### 6. Write the report and the backlog
+### 6. Write the report, then choose where the backlog lives
 
-Produce two artifacts, following the exact templates in `references/templates.md`.
+The review always produces a **report** (Artifact A). The **backlog** of actionable
+findings (Artifact B) is then delivered in one of two ways: as local files, or — on
+a GitHub-hosted repo, if the user opts in — as GitHub issues. Follow the exact
+templates in `references/templates.md`.
 
 **Artifact A — the findings report:** `docs/project_review_<YYYYMMDD>.md`
 (create `docs/` if absent; use today's date). If a report for today already
 exists, append `-2`, `-3`, … rather than overwriting, and mention it. The report
 has these sections, in this order: Verdict & summary; How this review was scoped;
 Findings (ordered by the priority model); New feature ideas (quarantined); What's
-done well. Every actionable finding links to its backlog file via a relative
-Markdown link.
+done well. The report is always written — it is the durable record and the source
+of truth — regardless of how the backlog is delivered. Each actionable finding
+links to its backlog item: a relative link to the backlog file in file-mode, or
+the issue URL in issue-mode (see step 7).
 
-**Artifact B — one backlog doc per actionable finding:**
-`backlog/<NNN>-<slug>.md` off the project root (create `backlog/` if absent).
-Before writing, scan the existing `backlog/` folder and continue the zero-padded
-numbering rather than colliding with prior runs. Each file is a self-contained,
-PR-ready work item (template in `references/templates.md`).
+**Artifact B — the backlog, one item per actionable finding.** Default delivery is
+**local files**: `backlog/<NNN>-<slug>.md` off the project root (create `backlog/`
+if absent). Before writing, scan the existing `backlog/` folder and continue the
+zero-padded numbering rather than colliding with prior runs. Each file is a
+self-contained, PR-ready work item (template in `references/templates.md`). If the
+repo is GitHub-hosted, offer issue-mode first (step 7) before writing files —
+because when the user chooses issues, the issues **replace** the files and you skip
+`backlog/` entirely.
 
 **Cap the backlog** at the top ~15 findings by priority by default. Make this
 adjustable from the user's prompt — "give me everything" lifts the cap, "just the
-top 5" tightens it. Do not spray 50 files; a capped, ranked backlog is more useful
-than an exhaustive dump.
+top 5" tightens it. The cap applies in both file-mode and issue-mode; don't spray
+50 files or 50 issues.
 
 The **What's done well** section is not filler. It tells the team which patterns to
 preserve and keeps the review balanced rather than reflexively negative. Name real
 strengths, with evidence, the same way you evidence problems.
 
-### 7. Calibrate trust in the report itself
+### 7. Offer to file the backlog as GitHub issues (opt-in)
+
+This is the one step where the skill writes outside the working tree, so treat it
+with the same care as posting to a shared PR: **never create issues without the
+user's explicit confirmation**, and always show exactly what will be created first.
+
+**When to offer.** Only when the repo is GitHub-hosted and the `gh` CLI is
+authenticated. Detect both before offering:
+
+```bash
+gh repo view --json nameWithOwner -q .nameWithOwner   # confirms GitHub remote + auth
+```
+
+If that fails (not a GitHub remote, `gh` missing or not logged in, or Issues
+disabled), say so briefly and fall back silently to file-mode — write the
+`backlog/` files as in step 6. Do not try to install or authenticate anything.
+
+**The offer.** Present the full ranked list of findings that would become issues —
+title, tier, lens, and the labels each would get — and ask the user to confirm.
+**Default to all of them, across all tiers.** Let the user trim the set ("skip the
+P3s", "just the first eight") before you create anything; respect the backlog cap
+from step 6 as the starting set.
+
+**Creating the issues.** Build a findings JSON (schema documented at the top of
+`scripts/create_issues.py`) and run the helper, which is read-only until it has
+your confirmed set:
+
+```bash
+python3 scripts/create_issues.py --findings findings.json --dry-run   # preview
+python3 scripts/create_issues.py --findings findings.json             # create
+```
+
+The script ensures the needed labels exist, **deduplicates against existing issues**
+using a hidden marker so re-running a review doesn't create duplicates, maps tier /
+lens / severity to labels, and prints the created/skipped issue URLs. Capture those
+URLs.
+
+**Issues replace files.** When the user confirms issue creation, do **not** write
+`backlog/` files for the findings that became issues — the issues are the backlog.
+Write the report so each finding links to its issue URL. (Findings the user
+explicitly excluded from issue creation still need a home: write those as
+`backlog/` files so nothing is silently dropped, and link them accordingly.)
+
+New-feature ideas are never filed as issues automatically — they stay quarantined
+in the report, consistent with not generating backlog docs for them.
+
+### 8. Calibrate trust in the report itself
 
 Fill in the **How this review was scoped** section honestly: what you read in full,
 what you sampled, what you skipped, and why. A reader who knows you deep-read the
@@ -222,10 +276,17 @@ yourself at the end so the priority model is applied consistently.
 
 ## Safety and constraints
 
-- **Read-only on source.** Read code freely; write **only** the report and backlog
-  files. Never edit source, never run destructive or state-changing commands,
-  never push, never open PRs.
+- **Read-only on source.** Read code freely; write **only** the report and the
+  backlog (files, or GitHub issues per step 7). Never edit source, never run
+  destructive or state-changing commands, never push, never open PRs.
+- **Creating GitHub issues is the one external write, and it is gated.** It happens
+  only on a GitHub repo, only after the user explicitly confirms the set, and only
+  through `scripts/create_issues.py` (which dedupes so reruns don't duplicate).
+  Everything up to that confirmation is read-only. If GitHub or `gh` isn't
+  available, fall back to `backlog/` files — never as a substitute, and never
+  without asking.
 - **No network or installs** as part of the review unless the user explicitly asks.
+  (Reading the GitHub remote via an already-authenticated `gh` for step 7 is fine.)
 - **Ask one question when genuinely ambiguous.** If the project is huge or the
   scope is unclear (which subtree? which lenses? what backlog cap?), ask a single
   clarifying question rather than guessing. Otherwise proceed with sensible
@@ -234,12 +295,15 @@ yourself at the end so the priority model is applied consistently.
 ## Output expectations
 
 - A skimmable report at `docs/project_review_<YYYYMMDD>.md` with the exact section
-  structure, findings ordered by the impact×effort priority tier.
-- A capped, numbered set of PR-ready backlog docs under `backlog/`, each linked
-  from the report.
+  structure, findings ordered by the impact×effort priority tier. Always written.
+- A capped, PR-ready backlog, delivered either as numbered docs under `backlog/`
+  (default) or as GitHub issues (opt-in, on a GitHub repo, after confirmation —
+  issues replace the files when chosen). Each finding is linked from the report
+  (relative file link, or issue URL).
 - Every finding cites `path:line` evidence and an honest confidence level.
 - Bug/robustness findings carry a severity tag; nothing else is forced onto a
   severity scale.
-- New-feature ideas are quarantined and evidence-backed, with no backlog docs
-  unless asked.
-- Source code is left untouched.
+- New-feature ideas are quarantined and evidence-backed, with no backlog docs or
+  issues unless asked.
+- Source code is left untouched; GitHub issues are created only with explicit
+  confirmation.

@@ -67,8 +67,13 @@ case.>
 - Use the exact `path:line` format so evidence is greppable and links cleanly.
 - `Severity` is `—` for refactoring and enhancement findings; only bug/robustness
   findings carry Critical/High/Medium/Low. See `priority-rubric.md`.
-- Backlog links are relative from `docs/` to `backlog/`, i.e. `../backlog/NNN-slug.md`.
-- Only findings within the backlog cap get a backlog file and link; if you list
+- Backlog links depend on delivery mode (see SKILL.md step 6–7):
+  - **File-mode (default):** relative link from `docs/` to `backlog/`, i.e.
+    `[001](../backlog/001-slug.md)`.
+  - **Issue-mode (GitHub, opt-in):** link to the created issue URL instead, e.g.
+    `[#42](https://github.com/owner/name/issues/42)`. The report is still written;
+    only the backlog *files* are skipped for findings that became issues.
+- Only findings within the backlog cap get a backlog item and link; if you list
   additional lower-priority findings beyond the cap, present them without a link
   and note they weren't written up as work items.
 
@@ -117,3 +122,29 @@ existing tests still pass".>
 <What this change touches and what could regress. Call out shared code, public
 APIs, migrations, or anything that needs extra care in review/QA.>
 ```
+
+---
+
+## Artifact B in issue-mode (GitHub, opt-in)
+
+When the user opts to file the backlog as GitHub issues (SKILL.md step 7), each
+issue's **body is exactly the file template above** (the `# Title` line becomes the
+issue title; the rest becomes the body). `scripts/create_issues.py` appends a hidden
+marker for dedup — you don't add it yourself.
+
+Build a `findings.json` for the script (schema is documented at the top of
+`scripts/create_issues.py`): one object per finding with `seq`, `slug`, `title`,
+`tier`, `lens`, `severity` (or `null`), and `body` (the full work-item markdown).
+
+**Label mapping** the script applies, so you can describe it in the confirmation
+prompt:
+
+| Field | Label |
+|-------|-------|
+| every issue | `project-review` |
+| tier | `P0` / `P1` / `P2` / `P3` |
+| lens | `bug` / `refactoring` / `enhancement` / `robustness` |
+| severity (defects only) | `severity:Critical` … `severity:Low` |
+
+Always run the script with `--dry-run` first and show the user the resulting
+created/skipped list before creating anything for real.
