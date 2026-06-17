@@ -625,7 +625,8 @@ def cmd_import(args) -> int:
     verb = "Would import" if args.dry_run else "Imported"
     summary = f"{verb} {len(rows)} transaction(s) into {account.name}"
     if skipped:
-        summary += f" ({len(skipped)} duplicate(s) skipped)"
+        summary += (f" ({len(skipped)} duplicate(s) skipped; "
+                    f"pass --no-dedupe to keep them)")
     print(summary)
     if args.dry_run:
         table = Table(headers=["Date", "Description", "Counter-account",

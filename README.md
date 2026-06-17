@@ -352,10 +352,12 @@ beans import bank.csv --account Checking --category Expenses:Other
 Column names are remappable (`--date-col`, `--amount-col`, `--desc-col`,
 `--category-col`) to fit whatever your bank produces.
 
-Re-importing overlapping exports is safe: rows matching an existing
-transaction (same date, account, amount) are skipped automatically
-(disable with `--no-dedupe`). Rows without a category are routed by saved
-rules before falling back to `--category`:
+Re-importing overlapping exports is safe: deduplication is count-aware, so
+re-importing the same file is a no-op, but two genuinely distinct rows that
+share a date and amount (say, two identical coffees on one day) both import
+rather than collapsing into one (disable dedupe entirely with `--no-dedupe`).
+Rows without a category are routed by saved rules before falling back to
+`--category`:
 
 ```sh
 beans rule add "WHOLE FOODS" Groceries

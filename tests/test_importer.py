@@ -32,6 +32,42 @@ def test_dedupe_skips_existing(led, tmp_path):
     assert len(again["skipped"]) == 2
 
 
+def test_distinct_same_day_same_amount_rows_both_import(led, tmp_path):
+    # Two genuinely distinct rows that share a date and amount must not
+    # collapse into one: count-aware dedupe keeps both.
+    checking = led.find_account("Assets:Checking")
+    path = write_csv(tmp_path,
+                     "2026-03-01,Coffee,-4.50,Groceries\n"
+                     "2026-03-01,Coffee,-4.50,Groceries\n")
+    result = import_csv(led, path, checking,
+                        default_category=led.find_account("Expenses:Other"))
+    assert len(result["imported"]) == 2
+    assert result["skipped"] == []
+    assert len(led.transactions()) == 2
+    # Re-importing the same file is still a no-op (both now look like dupes).
+    again = import_csv(led, path, checking,
+                       default_category=led.find_account("Expenses:Other"))
+    assert again["imported"] == []
+    assert len(again["skipped"]) == 2
+
+
+def test_dry_run_matches_real_run(led, tmp_path):
+    # The preview must agree with the real run, including for intra-file
+    # duplicates that a per-row "exists?" check would mis-count.
+    checking = led.find_account("Assets:Checking")
+    post(led, date(2026, 3, 1), "Pay",
+         ("Assets:Checking", 100000), ("Income:Salary", -100000))
+    path = write_csv(tmp_path,
+                     "2026-03-01,Pay,1000.00,Salary\n"
+                     "2026-03-02,Coffee,-4.50,Groceries\n"
+                     "2026-03-02,Coffee,-4.50,Groceries\n")
+    kw = dict(default_category=led.find_account("Expenses:Other"))
+    dry = import_csv(led, path, checking, dry_run=True, **kw)
+    real = import_csv(led, path, checking, **kw)
+    assert len(dry["imported"]) == len(real["imported"]) == 2
+    assert len(dry["skipped"]) == len(real["skipped"]) == 1
+
+
 def test_no_dedupe_flag(led, tmp_path):
     checking = led.find_account("Assets:Checking")
     path = write_csv(tmp_path, "2026-03-01,Pay,1000.00,Salary\n")
