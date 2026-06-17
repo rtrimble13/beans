@@ -108,8 +108,15 @@ def income_statement(led: Ledger, start: date | None, end: date,
     data["total_expenses"] = sum(data["expenses"].values())
     data["net_income"] = data["total_income"] - data["total_expenses"]
     if compare:
-        p_start, p_end, p_label = prior_period(start, end)
-        data["compare"] = income_statement(led, p_start, p_end, p_label)
+        if start is None:
+            # An unbounded period has no prior period to compare against;
+            # degrade gracefully with a note instead of erroring out.
+            data["compare_note"] = (
+                "comparison unavailable for an unbounded period "
+                "(use a bounded period or --from/--to)")
+        else:
+            p_start, p_end, p_label = prior_period(start, end)
+            data["compare"] = income_statement(led, p_start, p_end, p_label)
     return data
 
 
@@ -155,6 +162,8 @@ def render_income_statement(data: dict, decimals: int, symbol: str) -> str:
                           money(prev, decimals, symbol),
                           money(cur - prev, decimals, symbol))
         lines.append(cmp_table.render())
+    if "compare_note" in data:
+        lines += ["", data["compare_note"]]
     return "\n".join(lines)
 
 
