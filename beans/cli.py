@@ -71,18 +71,18 @@ def _period(args, default: str = "ytd"):
     )
 
 
-def _emit(args, led: Ledger, data: dict, renderer) -> None:
-    if getattr(args, "json", False):
-        print(json.dumps(reports.jsonify(data, led.decimals), indent=2))
-    else:
-        print(renderer(data, led.decimals, _symbol(led)))
-
-
 def _print_json(led: Ledger, data) -> None:
     """Serialize a plain data structure through the shared jsonify pipeline:
     integer minor-unit amounts become major-unit decimal strings, foreign
     amounts wrapped in reports.Money render at their own precision."""
     print(json.dumps(reports.jsonify(data, led.decimals), indent=2))
+
+
+def _emit(args, led: Ledger, data: dict, renderer) -> None:
+    if getattr(args, "json", False):
+        _print_json(led, data)
+    else:
+        print(renderer(data, led.decimals, _symbol(led)))
 
 
 def _print_transaction(led: Ledger, txn) -> None:
