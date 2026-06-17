@@ -71,6 +71,25 @@ def test_export_csv(led):
     assert rows[2]["txn_id"] == "2"
 
 
+def test_export_csv_includes_voids(led):
+    # A voided transaction must survive the CSV export, flagged, just as it
+    # does in JSON — the two formats must agree on what "whole" means.
+    seed(led)
+    led.void_transaction(2)  # the rent transaction
+    text = export.export_csv(led)
+    rows = list(csv.DictReader(io.StringIO(text)))
+    assert "void" in rows[0]
+    by_txn = {}
+    for r in rows:
+        by_txn.setdefault(r["txn_id"], set()).add(r["void"])
+    assert by_txn["1"] == {"0"}  # opening, not void
+    assert by_txn["2"] == {"1"}  # rent, voided — present and flagged
+    # And JSON agrees: the voided transaction is present with void=True.
+    data = export.export_json(led)
+    voided = [t for t in data["transactions"] if t["id"] == 2]
+    assert len(voided) == 1 and voided[0]["void"] is True
+
+
 def test_backup_roundtrip(led, tmp_path):
     seed(led)
     dest = tmp_path / "snapshot.db"

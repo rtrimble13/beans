@@ -321,6 +321,10 @@ beans backup                       # timestamped copy next to the ledger
 beans backup ~/backups/            # ...or wherever you keep them
 ```
 
+Both exports are complete: voided transactions are included (the CSV carries
+a `void` column, `1` for voided rows, alongside `cleared`), so your archived
+data matches the ledger rather than silently dropping voids.
+
 Backups use SQLite's online backup API, so they're consistent even if
 taken mid-write. Restore is just `beans -f backup.db`.
 

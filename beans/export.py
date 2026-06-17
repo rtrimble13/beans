@@ -146,9 +146,12 @@ def export_csv(led: Ledger) -> str:
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["txn_id", "date", "description", "payee", "tags",
-                     "account", "amount", "cleared", "currency",
+                     "void", "account", "amount", "cleared", "currency",
                      "foreign_amount"])
-    for txn in led.transactions():
+    # Include voided transactions, matching export_json: void is the
+    # audit-preserving alternative to deletion, so a "whole" export must
+    # carry it. The void column flags them (like the cleared column).
+    for txn in led.transactions(include_void=True):
         for p in txn.postings:
             account = accounts.get(p.account_id)
             code = account.currency if account else None
@@ -158,6 +161,7 @@ def export_csv(led: Ledger) -> str:
                 txn.description,
                 txn.payee,
                 ",".join(txn.tags),
+                int(txn.void),
                 p.account_name,
                 to_major(p.amount, led.decimals),
                 int(p.cleared),
