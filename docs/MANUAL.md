@@ -77,10 +77,10 @@ If more than one account matches at a given stage, `beans` reports the
 ambiguous candidates and asks you to be more specific rather than guessing.
 If nothing matches, it tells you to check `beans account list`.
 
-**Periods.** Commands that accept `--period` (income statement, cash flow,
-budget report, analyze, register, tx list) understand:
+**Periods.** Commands that accept `-p`/`--period` (income statement, cash
+flow, budget report, analyze, register, tx list) understand:
 
-- `ytd` (year-to-date; the default for most period-based reports)
+- `ytd` (year-to-date)
 - `all` (every transaction in the ledger)
 - `this-month`, `last-month`
 - `this-quarter`, `last-quarter`
@@ -88,6 +88,11 @@ budget report, analyze, register, tx list) understand:
 - `YYYY` (a specific year, e.g. `2026`)
 - `YYYY-MM` (a specific month, e.g. `2026-06`)
 - `YYYY-QN` (a specific quarter, e.g. `2026-Q2`)
+
+The default when `--period`/`--from`/`--to` are all omitted varies by
+command: `report income`, `report cashflow`, and `analyze` default to
+`ytd`; `tx list` and `register` default to `all`; `budget report` defaults
+to `this-month`.
 
 `--from DATE` and `--to DATE` give an explicit range and override
 `--period` when present; `--to` alone defaults its end to today.
@@ -216,11 +221,15 @@ beans account modify NAME [--rename NEW_NAME] [--cash | --no-cash]
 
 ### Best practices
 
-- Default cash-flow classification follows corporate convention:
-  income/expense accounts → operating, non-cash assets (investments) →
-  investing, liabilities/equity → financing. Only set `--cashflow`
-  explicitly when an account genuinely doesn't fit that pattern (e.g. a
-  brokerage cash sweep account you want treated as investing rather than
+- Default cash-flow classification follows corporate convention by account
+  type: income/expense → operating, asset → investing, liability/equity →
+  financing — this is the type's default regardless of the `--cash` flag.
+  In practice this only matters for non-cash assets (investments), since
+  accounts marked `--cash` are excluded from the cash-flow statement's
+  bucketing entirely (they're the cash side the statement explains, not a
+  counterparty). Only set `--cashflow` explicitly on a non-cash account
+  that genuinely doesn't fit its type's default (e.g. an
+  `Expenses:...` account you want bucketed as investing instead of
   operating).
 - Mark every checking/savings/wallet account `--cash` at creation time —
   the cash flow statement is only as good as this flag. If a "reconciles
