@@ -92,7 +92,9 @@ captured output:
 4. [Recurring, goals & investing](docs/vignettes/04-recurring-goals-investing.md)
    — automate bills, set goals, and track investments.
 
-The rest of this README is the command reference.
+The rest of this README is the command reference. For the full instruction
+manual — every command, every flag, with parameter tables and best practices
+for each — see [`docs/MANUAL.md`](docs/MANUAL.md).
 
 ## Concepts
 
