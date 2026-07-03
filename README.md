@@ -91,6 +91,9 @@ captured output:
    bank CSV and tie out to your statement.
 4. [Recurring, goals & investing](docs/vignettes/04-recurring-goals-investing.md)
    — automate bills, set goals, and track investments.
+5. [Loans & liquidity](docs/vignettes/05-loans-and-liquidity.md) — classify
+   current vs non-current, finance a loan, and read a classified balance sheet
+   with liquidity ratios.
 
 The rest of this README is the command reference. For the full instruction
 manual — every command, every flag, with parameter tables and best practices
@@ -120,6 +123,21 @@ Two flags drive the statement of cash flows:
   account's flows are classified under. Defaults follow corporate convention:
   income/expense → operating, non-cash assets → investing,
   liabilities/equity → financing.
+
+Assets and liabilities also carry a **liquidity** classification —
+`current` (realizable or due within a year) or `noncurrent` (beyond a year) —
+that drives the classified balance sheet and the working-capital ratios.
+Everything defaults to `current`; mark the long-term ones:
+
+```sh
+beans account add Assets:Prepaid:Insurance --type asset          # current
+beans account modify Retirement --noncurrent                     # long-term
+beans account add "Liabilities:Mortgage" --type liability --noncurrent
+beans account modify "Credit Card" --current
+```
+
+For an amortizing debt (mortgage, auto, student loan), don't classify by hand —
+attach a loan and let the amortization schedule split it (see **Loans** below).
 
 ### Transactions
 
@@ -198,7 +216,9 @@ beans report cashflow --period 2026
 ```
 
 The income statement shows each line as a % of total income (a common-size
-view). The balance sheet computes **retained earnings** on the fly —
+view). The balance sheet is **classified** — assets and liabilities are split
+into current and non-current sections (use `--flat` for a by-type-only listing).
+It computes **retained earnings** on the fly —
 cumulative net income that was never formally closed — so
 Assets = Liabilities + Equity always holds. The cash flow statement uses the
 direct method: every transaction that moves cash is classified by the
@@ -285,6 +305,31 @@ beans invest sell VTI 5 --price 300 --account Brokerage   # FIFO, books realized
 account is driven by `invest` commands), so the balance sheet reads like a
 brokerage statement while Assets = Liabilities + Equity still holds.
 
+## Loans
+
+Attach amortization terms to a liability account and beans derives the payment
+schedule, the split between principal and interest, and — for the balance
+sheet — the **current portion of long-term debt** (principal scheduled to come
+due within the next twelve months):
+
+```sh
+beans account add "Liabilities:Auto Loan" --type liability
+beans loan add --account "Auto Loan" --principal 30000 --rate 6.25 --term 60 \
+    --start 2026-01-01           # payment derived: 583.48/month
+beans loan show "Auto Loan"      # the full amortization schedule
+beans loan list                  # balance, current portion, non-current, rate
+beans loan pay "Auto Loan"       # post one payment: principal + interest + cash out
+```
+
+Give `--payment` instead of `--term` to solve for the number of payments. On a
+classified balance sheet the loan's *ledger* balance is split into current and
+non-current buckets using the schedule; the balance itself always comes from the
+ledger, so the two buckets sum to the real balance and the sheet still balances.
+`beans loan pay` computes interest on the actual outstanding balance and posts it
+to `Expenses:Interest`, so extra or missed payments stay accurate. (A variable
+rate or extra principal makes only the *split point* approximate, never the
+totals.)
+
 ## Multi-currency
 
 beans keeps its books in one base currency — the "functional currency", as
@@ -352,8 +397,10 @@ beans networth --months 12     # month-end net worth trend with deltas
 ```
 
 Reports the ratios you would compute for a company, adapted to a household:
-savings rate (margin), liquidity runway in months of expenses, debt-to-assets,
-debt-to-annual-income, and your top expense categories as a % of income.
+savings rate (margin), working capital and the current & quick ratios (from the
+current vs non-current split), liquidity runway in months of expenses,
+debt-to-assets, debt-to-annual-income, and your top expense categories as a % of
+income.
 
 ## CSV import
 
@@ -410,5 +457,6 @@ pytest
 
 The codebase is small and orthogonal: `ledger.py` (SQLite double-entry core),
 `reports.py` (statements), `budget.py`, `forecast.py`, `analysis.py`,
-`importer.py`, `cli.py`. All amounts are stored as integers in minor units;
+`loans.py` (amortization), `importer.py`, `cli.py`. All amounts are stored as
+integers in minor units;
 postings are debit-positive/credit-negative and must sum to zero.

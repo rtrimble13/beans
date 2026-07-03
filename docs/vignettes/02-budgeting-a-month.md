@@ -212,9 +212,17 @@ Performance
   Net Income (savings)               $3,512.75
   Savings Rate                           58.5%
 ...
+Working Capital
+  Current Assets                    $15,512.75
+  Current Liabilities                    $0.00
+  Working Capital                   $15,512.75
+
 Ratios
+  Current Ratio                            n/a
+  Quick Ratio                              n/a
   Liquidity Runway      6.2 months of expenses
   Debt / Assets                           0.0%
+  Debt / Annual Income                    0.0%
 ...
 Top expense categories
 Account                    Amount  % of Income
@@ -225,7 +233,12 @@ Expenses:Food:Dining       271.75         4.5%
 ```
 
 A **58.5% savings rate** and **6.2 months** of liquidity runway — the household
-equivalent of margin and burn rate.
+equivalent of margin and burn rate. The **current** and **quick ratios** read
+`n/a` here because this ledger carries no current liabilities (no credit-card
+balance, no short-term debt) — there's nothing to divide by. Once you owe money
+due within a year, those ratios measure whether your near-term assets can cover
+it; the **[Loans & liquidity](05-loans-and-liquidity.md)** walkthrough builds a
+ledger where they come alive.
 
 ## What just happened
 

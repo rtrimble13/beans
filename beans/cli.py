@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from beans import __version__
@@ -18,6 +19,7 @@ from beans import (
     fx,
     goals,
     invest,
+    loans,
     reconcile,
     recurring,
     reports,
@@ -142,13 +144,15 @@ def cmd_account_add(args) -> int:
     account = led.add_account(
         args.name, type_, is_cash=args.cash,
         cf_category=args.cashflow, description=args.desc,
-        currency=args.currency,
+        currency=args.currency, liquidity=args.liquidity,
     )
     notes = []
     if account.is_cash:
         notes.append("cash")
     if account.currency:
         notes.append(f"denominated in {account.currency}")
+    if type_ in (AccountType.ASSET, AccountType.LIABILITY):
+        notes.append(account.liquidity)
     notes.append(f"cash-flow: {account.cashflow}")
     print(f"Added {account.type.value} account "
           f"{account.name} ({', '.join(notes)})")
@@ -170,6 +174,7 @@ def cmd_account_list(args) -> int:
             {
                 "name": a.name, "type": a.type.value, "is_cash": a.is_cash,
                 "cashflow": a.cashflow, "closed": a.closed,
+                "liquidity": a.liquidity,
                 "balance": raw.get(a.id, 0) * a.type.natural_sign,
                 "currency": a.currency,
                 "foreign_balance": (
@@ -187,8 +192,11 @@ def cmd_account_list(args) -> int:
         headers.append("Foreign")
     table = Table(headers=headers, align="lllrr")
     for a in accounts:
+        noncurrent = (a.liquidity == "noncurrent"
+                      and a.type in (AccountType.ASSET, AccountType.LIABILITY))
         flags = ",".join(
             f for f in ("cash" if a.is_cash else "",
+                        "noncurrent" if noncurrent else "",
                         "closed" if a.closed else "",
                         a.cf_category or "") if f
         )
@@ -225,6 +233,14 @@ def cmd_account_modify(args) -> int:
         fields["is_cash"] = args.cash
     if args.cashflow:
         fields["cf_category"] = args.cashflow
+    if args.liquidity is not None:
+        if (args.liquidity == "noncurrent"
+                and account.type not in (AccountType.ASSET,
+                                         AccountType.LIABILITY)):
+            raise BeansError(
+                "only asset and liability accounts can be marked non-current"
+            )
+        fields["liquidity"] = args.liquidity
     if args.desc is not None:
         fields["description"] = args.desc
     if not fields:
@@ -446,7 +462,7 @@ def cmd_report_income(args) -> int:
 def cmd_report_balance(args) -> int:
     led = _open(args)
     as_of = parse_date(args.date, default=date.today())
-    data = reports.balance_sheet(led, as_of)
+    data = reports.balance_sheet(led, as_of, classified=not args.flat)
     _emit(args, led, data, reports.render_balance_sheet)
     return 0
 
@@ -854,6 +870,104 @@ def cmd_invest_mark(args) -> int:
     return 0
 
 
+def _parse_rate(text: str) -> Decimal:
+    """Parse an annual interest rate given as a percent (e.g. '6.25') into a
+    Decimal fraction (0.0625)."""
+    try:
+        pct = Decimal(str(text).strip().rstrip("%"))
+    except InvalidOperation:
+        raise BeansError(f"invalid interest rate: {text!r}")
+    if pct < 0:
+        raise BeansError("interest rate cannot be negative")
+    return pct / Decimal(100)
+
+
+def cmd_loan_add(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    if account.type is not AccountType.LIABILITY:
+        raise BeansError("loans can only be attached to liability accounts")
+    principal = parse_amount(args.principal, led.decimals)
+    rate = _parse_rate(args.rate)
+    start = parse_date(args.start, default=date.today())
+    payment = parse_amount(args.payment, led.decimals) if args.payment else None
+    term = args.term
+    periodic = loans.periodic_rate(rate)
+    if term is None and payment is None:
+        raise BeansError("give a term (--term) or a payment (--payment)")
+    if term is None:
+        term = loans.term_for(principal, periodic, payment)
+    if payment is None:
+        payment = loans.payment_for(principal, periodic, term)
+    # A payment that doesn't clear the first month's interest never amortizes
+    # (the balance grows). term_for enforces this when it derives the term;
+    # apply it here too so a hand-supplied --term + --payment can't slip a
+    # non-amortizing loan through. (Balloon loans, where the payment covers
+    # interest but not the full principal within the term, remain valid.)
+    if rate > 0 and Decimal(payment) <= Decimal(principal) * periodic:
+        raise BeansError(
+            f"payment {_fmt(led, payment)} does not cover the first month's "
+            f"interest on {_fmt(led, principal)} at "
+            f"{args.rate.rstrip('%')}% — the loan would never amortize"
+        )
+    loan = led.add_loan(account, principal, rate, term, payment, start)
+    # A loan spanning more than a year is long-term: mark the account
+    # non-current (the tag the balance sheet falls back to when the loan
+    # isn't consulted) and say so. A loan due within a year is short-term, so
+    # leave the account's classification untouched.
+    long_term = loan.term_months > 12
+    marked = long_term and account.liquidity != "noncurrent"
+    if marked:
+        led.update_account(account, liquidity="noncurrent")
+    note = " (marked non-current)" if marked else ""
+    print(f"Attached loan to {account.name}: "
+          f"{_fmt(led, loan.principal)} at {args.rate.rstrip('%')}% over "
+          f"{loan.term_months} months, payment {_fmt(led, loan.payment)}{note}")
+    return 0
+
+
+def cmd_loan_list(args) -> int:
+    led = _open(args)
+    as_of = parse_date(args.date, default=date.today())
+    data = loans.loans_report(led, as_of)
+    _emit(args, led, data, loans.render_loans)
+    return 0
+
+
+def cmd_loan_show(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    loan = led.loan_for(account)
+    if loan is None:
+        raise BeansError(f"no loan attached to {account.name}")
+    data = loans.schedule_report(loan)
+    _emit(args, led, data, loans.render_schedule)
+    return 0
+
+
+def cmd_loan_remove(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    led.remove_loan(account)
+    print(f"Removed loan from {account.name}")
+    return 0
+
+
+def cmd_loan_pay(args) -> int:
+    led = _open(args)
+    account = led.find_account(args.account)
+    cash = led.find_account(args.source or _default_cash_account(args))
+    when = parse_date(args.date, default=date.today())
+    amount = parse_amount(args.amount, led.decimals) if args.amount else None
+    result = loans.pay(led, account, cash, when, amount=amount)
+    print(f"Recorded transaction #{result['txn_id']}: paid "
+          f"{_fmt(led, result['payment'])} on {account.name} "
+          f"({_fmt(led, result['principal'])} principal + "
+          f"{_fmt(led, result['interest'])} interest); "
+          f"balance {_fmt(led, result['balance_after'])}")
+    return 0
+
+
 def cmd_price_set(args) -> int:
     led = _open(args)
     when = parse_date(args.date, default=date.today())
@@ -1078,6 +1192,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--currency", metavar="CODE",
                    help="denominate in a foreign currency (assets and "
                         "liabilities only), e.g. EUR")
+    p.add_argument("--noncurrent", dest="liquidity", action="store_const",
+                   const="noncurrent", default="current",
+                   help="classify as non-current on the balance sheet "
+                        "(assets and liabilities only)")
     p.add_argument("--desc", default="", help="description")
     p.set_defaults(func=cmd_account_add)
     p = account_sub.add_parser("list", help="list accounts with balances")
@@ -1098,6 +1216,13 @@ def build_parser() -> argparse.ArgumentParser:
     cash_group.add_argument("--cash", dest="cash", action="store_true",
                             default=None)
     cash_group.add_argument("--no-cash", dest="cash", action="store_false")
+    liq_group = p.add_mutually_exclusive_group()
+    liq_group.add_argument("--current", dest="liquidity",
+                           action="store_const", const="current", default=None,
+                           help="classify as current on the balance sheet")
+    liq_group.add_argument("--noncurrent", dest="liquidity",
+                           action="store_const", const="noncurrent",
+                           help="classify as non-current on the balance sheet")
     p.add_argument("--cashflow", choices=["operating", "investing",
                                           "financing"])
     p.add_argument("--desc", default=None)
@@ -1205,6 +1330,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = report_sub.add_parser("balance", aliases=["bs"],
                               help="balance sheet")
     p.add_argument("--date", "-d", help="as-of date (default: today)")
+    p.add_argument("--flat", action="store_true",
+                   help="list assets/liabilities by type only, without the "
+                        "current vs non-current split")
     _add_json_arg(p)
     p.set_defaults(func=cmd_report_balance)
     p = report_sub.add_parser("cashflow", aliases=["cf"],
@@ -1471,6 +1599,47 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     _add_json_arg(p)
     p.set_defaults(func=cmd_invest_mark)
+
+    # loan
+    p_loan = sub.add_parser("loan", help="amortizing loans on liabilities")
+    loan_sub = p_loan.add_subparsers(dest="subcommand", metavar="subcommand")
+    p = loan_sub.add_parser("add", help="attach a loan to a liability account")
+    p.add_argument("--account", "-a", required=True,
+                   help="liability account the loan is drawn against")
+    p.add_argument("--principal", "-p", required=True,
+                   help="original loan amount")
+    p.add_argument("--rate", "-r", required=True,
+                   help="nominal annual interest rate as a percent, e.g. 6.25")
+    p.add_argument("--term", "-n", type=int,
+                   help="number of monthly payments (derive from --payment "
+                        "if omitted)")
+    p.add_argument("--payment",
+                   help="monthly payment (derive from --term if omitted)")
+    p.add_argument("--start", "-s",
+                   help="date of the first payment (default: today)")
+    p.set_defaults(func=cmd_loan_add)
+    p = loan_sub.add_parser("list",
+                            help="loans with current/non-current split")
+    p.add_argument("--date", "-d", help="as-of date (default: today)")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_loan_list)
+    p = loan_sub.add_parser("show", help="amortization schedule for a loan")
+    p.add_argument("account", help="liability account with a loan")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_loan_show)
+    p = loan_sub.add_parser("remove", help="detach a loan from an account")
+    p.add_argument("account")
+    p.set_defaults(func=cmd_loan_remove)
+    p = loan_sub.add_parser("pay",
+                            help="post a payment split into principal/interest")
+    p.add_argument("account", help="liability account with a loan")
+    p.add_argument("--amount", help="payment amount (default: scheduled "
+                                    "payment)")
+    p.add_argument("--from", dest="source", metavar="ACCOUNT",
+                   help="paying cash account (default: config "
+                        "default_account or Checking)")
+    p.add_argument("--date", "-d")
+    p.set_defaults(func=cmd_loan_pay)
 
     # price
     p_price = sub.add_parser("price", help="security price history")

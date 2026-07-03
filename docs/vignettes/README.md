@@ -41,6 +41,11 @@ whichever job you have in front of you.
    debt-payoff goals, track investments as FIFO lots with mark-to-market, and
    glance at a forecast.
 
+5. **[Loans & liquidity](05-loans-and-liquidity.md)** — Classify assets and
+   liabilities as current vs non-current, finance a car with an amortizing loan,
+   read a classified balance sheet with the current portion of long-term debt
+   split out, and compute the current, quick, and working-capital ratios.
+
 ## Conventions used throughout
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured

@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+from beans import loans
 from beans.ledger import Ledger
 from beans.models import AccountType
 from beans.render import Table, bold, money, rollup, strip_shared_root
@@ -38,7 +39,8 @@ class Money:
 
 # Report-dict keys whose integer values are counts, not money.
 NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
-                  "posted_count"}
+                  "posted_count", "number", "term_months",
+                  "payments_remaining"}
 
 
 def jsonify(value, decimals: int):
@@ -170,7 +172,7 @@ def render_income_statement(data: dict, decimals: int, symbol: str) -> str:
 # -- balance sheet -----------------------------------------------------------
 
 
-def balance_sheet(led: Ledger, as_of: date) -> dict:
+def balance_sheet(led: Ledger, as_of: date, classified: bool = True) -> dict:
     raw = led.balances(as_of=as_of)
     assets = _natural_by_name(led, raw, AccountType.ASSET)
     liabilities = _natural_by_name(led, raw, AccountType.LIABILITY)
@@ -186,15 +188,44 @@ def balance_sheet(led: Ledger, as_of: date) -> dict:
     total_assets = sum(assets.values())
     total_liabilities = sum(liabilities.values())
     total_equity = sum(equity.values()) + retained
+
+    # Current vs non-current split. Assets follow their liquidity tag;
+    # liabilities are split by any attached loan's amortization schedule,
+    # falling back to the tag. Buckets always re-sum to the type totals.
+    assets_current, assets_noncurrent = {}, {}
+    for account in led.accounts(type_=AccountType.ASSET, include_closed=True):
+        amount = raw.get(account.id, 0) * AccountType.ASSET.natural_sign
+        if amount:
+            bucket = assets_current if account.is_current else assets_noncurrent
+            bucket[account.name] = amount
+    liab_split = loans.classified_liability_split(led, as_of, raw)
+    liabilities_current, liabilities_noncurrent = {}, {}
+    for account in led.accounts(type_=AccountType.LIABILITY,
+                                include_closed=True):
+        current, noncurrent = liab_split.get(account.id, (0, 0))
+        if current:
+            liabilities_current[account.name] = current
+        if noncurrent:
+            liabilities_noncurrent[account.name] = noncurrent
+
     return {
         "report": "balance_sheet",
         "as_of": as_of,
+        "classified": classified,
         "assets": assets,
+        "assets_current": assets_current,
+        "assets_noncurrent": assets_noncurrent,
         "liabilities": liabilities,
+        "liabilities_current": liabilities_current,
+        "liabilities_noncurrent": liabilities_noncurrent,
         "equity": equity,
         "retained_earnings": retained,
         "total_assets": total_assets,
+        "total_assets_current": sum(assets_current.values()),
+        "total_assets_noncurrent": sum(assets_noncurrent.values()),
         "total_liabilities": total_liabilities,
+        "total_liabilities_current": sum(liabilities_current.values()),
+        "total_liabilities_noncurrent": sum(liabilities_noncurrent.values()),
         "total_equity": total_equity,
         "net_worth": total_assets - total_liabilities,
         "balanced": total_assets == total_liabilities + total_equity,
@@ -212,8 +243,35 @@ def render_balance_sheet(data: dict, decimals: int, symbol: str) -> str:
         table.add(bold(f"Total {title}"), money(total, decimals, symbol))
         table.add("", "")
 
-    block("Assets", data["assets"], data["total_assets"])
-    block("Liabilities", data["liabilities"], data["total_liabilities"])
+    def subtotal(label: str, amounts: dict[str, int], total: int) -> None:
+        if not amounts:
+            return
+        table.add("  " + bold(label), "")
+        _tree_rows(table, amounts, decimals, indent="    ")
+        table.add("  " + label + " subtotal", money(total, decimals, symbol))
+
+    def classified_block(title: str, cur: dict[str, int], cur_total: int,
+                         non: dict[str, int], non_total: int,
+                         total: int) -> None:
+        table.add(bold(title), "")
+        subtotal(f"Current {title}", cur, cur_total)
+        subtotal(f"Non-current {title}", non, non_total)
+        table.rule()
+        table.add(bold(f"Total {title}"), money(total, decimals, symbol))
+        table.add("", "")
+
+    if data.get("classified", True):
+        classified_block(
+            "Assets", data["assets_current"], data["total_assets_current"],
+            data["assets_noncurrent"], data["total_assets_noncurrent"],
+            data["total_assets"])
+        classified_block(
+            "Liabilities", data["liabilities_current"],
+            data["total_liabilities_current"], data["liabilities_noncurrent"],
+            data["total_liabilities_noncurrent"], data["total_liabilities"])
+    else:
+        block("Assets", data["assets"], data["total_assets"])
+        block("Liabilities", data["liabilities"], data["total_liabilities"])
     table.add(bold("Equity"), "")
     _tree_rows(table, data["equity"], decimals)
     table.add("  Retained Earnings",

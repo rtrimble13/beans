@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import enum
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 
 class AccountType(str, enum.Enum):
@@ -46,6 +47,10 @@ class AccountType(str, enum.Enum):
 
 CASHFLOW_CATEGORIES = ("operating", "investing", "financing")
 
+# Balance-sheet liquidity classification for assets and liabilities:
+# `current` = realizable/due within a year, `noncurrent` = beyond a year.
+LIQUIDITY_CLASSES = ("current", "noncurrent")
+
 
 @dataclass
 class Account:
@@ -57,10 +62,15 @@ class Account:
     closed: bool = False
     description: str = ""
     currency: str | None = None  # denomination; None = the base currency
+    liquidity: str = "current"  # current | noncurrent (assets & liabilities)
 
     @property
     def cashflow(self) -> str:
         return self.cf_category or self.type.default_cashflow
+
+    @property
+    def is_current(self) -> bool:
+        return self.liquidity == "current"
 
     @property
     def leaf(self) -> str:
@@ -88,6 +98,25 @@ class Transaction:
     tags: list[str] = field(default_factory=list)
     void: bool = False
     postings: list[Posting] = field(default_factory=list)
+
+
+@dataclass
+class Loan:
+    """An amortizing loan attached to a liability account. The terms drive a
+    standard amortization schedule; the schedule is used only to split the
+    account's ledger balance into a current portion (principal due within a
+    year) and a non-current remainder — the balance itself always comes from
+    the ledger."""
+
+    id: int
+    account_id: int
+    principal: int  # original principal, minor units
+    annual_rate: Decimal  # nominal annual rate, e.g. Decimal('0.0625')
+    term_months: int  # number of scheduled payments
+    payment: int  # scheduled payment, minor units
+    start_date: datetime.date
+    frequency: str = "monthly"
+    account_name: str = ""
 
 
 RECURRENCE_FREQUENCIES = (

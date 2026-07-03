@@ -94,8 +94,9 @@ def test_restore_round_trip(led, tmp_path):
     # Closed account stays closed; side entities all came across.
     assert dst.find_account("Expenses:Entertainment").closed
     assert summary == {"accounts": 24, "transactions": 5, "budgets": 1,
-                       "recurring": 1, "goals": 1, "import_rules": 1,
-                       "lots": 1, "prices": 1, "fx_rates": 1}
+                       "recurring": 1, "goals": 1, "loans": 0,
+                       "import_rules": 1, "lots": 1, "prices": 1,
+                       "fx_rates": 1}
     assert [r.name for r in dst.recurrings()] == ["monthly rent"]
 
 
@@ -110,6 +111,41 @@ def test_restore_preserves_default_cashflow_state(led, tmp_path):
     assert dst.find_account("Assets:Savings").cf_category == "operating"
     # Checking was never overridden -> still implicit default.
     assert dst.find_account("Assets:Checking").cf_category is None
+
+
+def test_restore_preserves_liquidity_and_loans(led, tmp_path):
+    led.update_account(led.find_account("Assets:Savings"),
+                       liquidity="noncurrent")
+    loans_acct = led.find_account("Liabilities:Loans")
+    led.add_transaction(date(2026, 1, 1), "draw", [
+        Posting(account_id=led.find_account("Assets:Checking").id,
+                amount=3000000),
+        Posting(account_id=loans_acct.id, amount=-3000000)])
+    led.add_loan(loans_acct, 3000000, Decimal("0.0625"), 60, 58348,
+                 date(2026, 1, 1))
+    data = export.export_json(led)
+
+    dst = Ledger(tmp_path / "r.db", create=True)
+    summary = restore_ledger(dst, data)
+    assert summary["loans"] == 1
+    assert dst.find_account("Assets:Savings").liquidity == "noncurrent"
+    loan = dst.loan_for(dst.find_account("Liabilities:Loans"))
+    assert loan is not None
+    assert loan.principal == 3000000
+    assert loan.annual_rate == Decimal("0.0625")
+    assert loan.term_months == 60
+    assert loan.payment == 58348
+
+
+def test_restore_defaults_missing_liquidity_to_current(tmp_path):
+    # A legacy export with no liquidity key restores every account as current.
+    dst = Ledger(tmp_path / "r.db", create=True)
+    restore_ledger(dst, {
+        "format": "beans-export",
+        "meta": {"currency": "USD", "decimals": 2},
+        "accounts": [{"name": "Assets:Old", "type": "asset"}],
+    })
+    assert dst.find_account("Assets:Old").liquidity == "current"
 
 
 def test_restore_rejects_non_beans_json(tmp_path):

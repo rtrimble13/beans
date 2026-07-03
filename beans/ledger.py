@@ -14,9 +14,11 @@ from pathlib import Path
 
 from beans.models import (
     CASHFLOW_CATEGORIES,
+    LIQUIDITY_CLASSES,
     RECURRENCE_FREQUENCIES,
     Account,
     AccountType,
+    Loan,
     Posting,
     Recurring,
     Transaction,
@@ -47,7 +49,9 @@ CREATE TABLE IF NOT EXISTS accounts (
                 ('operating','investing','financing')),
     closed      INTEGER NOT NULL DEFAULT 0,
     description TEXT NOT NULL DEFAULT '',
-    currency    TEXT
+    currency    TEXT,
+    liquidity   TEXT NOT NULL DEFAULT 'current' CHECK (liquidity IN
+                ('current','noncurrent'))
 );
 CREATE TABLE IF NOT EXISTS transactions (
     id          INTEGER PRIMARY KEY,
@@ -107,6 +111,16 @@ CREATE TABLE IF NOT EXISTS goals (
     target_date TEXT NOT NULL,
     created     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS loans (
+    id          INTEGER PRIMARY KEY,
+    account_id  INTEGER NOT NULL UNIQUE REFERENCES accounts(id),
+    principal   INTEGER NOT NULL,
+    annual_rate TEXT NOT NULL,
+    term_months INTEGER NOT NULL,
+    payment     INTEGER NOT NULL,
+    start_date  TEXT NOT NULL,
+    frequency   TEXT NOT NULL DEFAULT 'monthly'
+);
 CREATE TABLE IF NOT EXISTS lots (
     id         INTEGER PRIMARY KEY,
     account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -135,31 +149,33 @@ CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_lots_symbol ON lots(symbol);
 """
 
-# (name, type, is_cash) — a sensible starter chart for personal finance.
-DEFAULT_CHART: list[tuple[str, AccountType, bool]] = [
-    ("Assets:Cash", AccountType.ASSET, True),
-    ("Assets:Checking", AccountType.ASSET, True),
-    ("Assets:Savings", AccountType.ASSET, True),
-    ("Assets:Investments:Brokerage", AccountType.ASSET, False),
-    ("Assets:Investments:Retirement", AccountType.ASSET, False),
-    ("Liabilities:Credit Card", AccountType.LIABILITY, False),
-    ("Liabilities:Loans", AccountType.LIABILITY, False),
-    ("Equity:Opening Balances", AccountType.EQUITY, False),
-    ("Income:Salary", AccountType.INCOME, False),
-    ("Income:Interest", AccountType.INCOME, False),
-    ("Income:Dividends", AccountType.INCOME, False),
-    ("Income:Other", AccountType.INCOME, False),
-    ("Expenses:Housing:Rent", AccountType.EXPENSE, False),
-    ("Expenses:Housing:Utilities", AccountType.EXPENSE, False),
-    ("Expenses:Food:Groceries", AccountType.EXPENSE, False),
-    ("Expenses:Food:Dining", AccountType.EXPENSE, False),
-    ("Expenses:Transportation", AccountType.EXPENSE, False),
-    ("Expenses:Health", AccountType.EXPENSE, False),
-    ("Expenses:Insurance", AccountType.EXPENSE, False),
-    ("Expenses:Entertainment", AccountType.EXPENSE, False),
-    ("Expenses:Shopping", AccountType.EXPENSE, False),
-    ("Expenses:Taxes", AccountType.EXPENSE, False),
-    ("Expenses:Other", AccountType.EXPENSE, False),
+# (name, type, is_cash, liquidity) — a sensible starter chart for personal
+# finance. `liquidity` classifies assets/liabilities as current/noncurrent for
+# the classified balance sheet; it is ignored for equity/income/expense.
+DEFAULT_CHART: list[tuple[str, AccountType, bool, str]] = [
+    ("Assets:Cash", AccountType.ASSET, True, "current"),
+    ("Assets:Checking", AccountType.ASSET, True, "current"),
+    ("Assets:Savings", AccountType.ASSET, True, "current"),
+    ("Assets:Investments:Brokerage", AccountType.ASSET, False, "noncurrent"),
+    ("Assets:Investments:Retirement", AccountType.ASSET, False, "noncurrent"),
+    ("Liabilities:Credit Card", AccountType.LIABILITY, False, "current"),
+    ("Liabilities:Loans", AccountType.LIABILITY, False, "noncurrent"),
+    ("Equity:Opening Balances", AccountType.EQUITY, False, "current"),
+    ("Income:Salary", AccountType.INCOME, False, "current"),
+    ("Income:Interest", AccountType.INCOME, False, "current"),
+    ("Income:Dividends", AccountType.INCOME, False, "current"),
+    ("Income:Other", AccountType.INCOME, False, "current"),
+    ("Expenses:Housing:Rent", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Housing:Utilities", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Food:Groceries", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Food:Dining", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Transportation", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Health", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Insurance", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Entertainment", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Shopping", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Taxes", AccountType.EXPENSE, False, "current"),
+    ("Expenses:Other", AccountType.EXPENSE, False, "current"),
 ]
 
 BUDGET_PERIOD_MONTHS = {
@@ -217,6 +233,12 @@ class Ledger:
                 self.db.execute(
                     "ALTER TABLE accounts ADD COLUMN currency TEXT"
                 )
+            if "liquidity" not in account_cols:
+                self.db.execute(
+                    "ALTER TABLE accounts ADD COLUMN liquidity TEXT NOT NULL "
+                    "DEFAULT 'current' CHECK (liquidity IN "
+                    "('current','noncurrent'))"
+                )
 
     def close(self) -> None:
         self.db.close()
@@ -258,8 +280,9 @@ class Ledger:
         self.set_meta("decimals", "0" if currency.upper() == "JPY" else "2")
         self.set_meta("created", datetime.now().isoformat(timespec="seconds"))
         if with_chart:
-            for name, type_, is_cash in DEFAULT_CHART:
-                self.add_account(name, type_, is_cash=is_cash)
+            for name, type_, is_cash, liquidity in DEFAULT_CHART:
+                self.add_account(name, type_, is_cash=is_cash,
+                                 liquidity=liquidity)
 
     # -- accounts ----------------------------------------------------------
 
@@ -274,6 +297,7 @@ class Ledger:
             closed=bool(row["closed"]),
             description=row["description"],
             currency=row["currency"],
+            liquidity=row["liquidity"],
         )
 
     def add_account(
@@ -284,6 +308,7 @@ class Ledger:
         cf_category: str | None = None,
         description: str = "",
         currency: str | None = None,
+        liquidity: str = "current",
     ) -> Account:
         name = name.strip()
         if not name or name.startswith(":") or name.endswith(":"):
@@ -295,6 +320,16 @@ class Ledger:
             )
         if is_cash and type_ is not AccountType.ASSET:
             raise BeansError("only asset accounts can be marked as cash")
+        if liquidity not in LIQUIDITY_CLASSES:
+            raise BeansError(
+                f"invalid liquidity {liquidity!r} "
+                f"(expected one of {', '.join(LIQUIDITY_CLASSES)})"
+            )
+        if (liquidity == "noncurrent"
+                and type_ not in (AccountType.ASSET, AccountType.LIABILITY)):
+            raise BeansError(
+                "only asset and liability accounts can be marked non-current"
+            )
         if currency:
             currency = currency.upper().strip()
             if not currency.isalpha() or len(currency) != 3:
@@ -315,14 +350,14 @@ class Ledger:
                 cur = self.db.execute(
                     "INSERT INTO accounts "
                     "(name, type, is_cash, cf_category, description, "
-                    "currency) VALUES (?, ?, ?, ?, ?, ?)",
+                    "currency, liquidity) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (name, type_.value, int(is_cash), cf_category,
-                     description, currency),
+                     description, currency, liquidity),
                 )
         except sqlite3.IntegrityError:
             raise BeansError(f"account {name!r} already exists")
         return Account(cur.lastrowid, name, type_, is_cash, cf_category,
-                       False, description, currency)
+                       False, description, currency, liquidity)
 
     def accounts(
         self,
@@ -367,7 +402,8 @@ class Ledger:
         )
 
     def update_account(self, account: Account, **fields) -> None:
-        allowed = {"name", "is_cash", "cf_category", "closed", "description"}
+        allowed = {"name", "is_cash", "cf_category", "closed", "description",
+                   "liquidity"}
         if "name" in fields:
             name = fields["name"] = str(fields["name"]).strip()
             if not name or name.startswith(":") or name.endswith(":"):
@@ -378,6 +414,19 @@ class Ledger:
                 f"invalid cash-flow category {cf!r} "
                 f"(expected one of {', '.join(CASHFLOW_CATEGORIES)})"
             )
+        liq = fields.get("liquidity")
+        if liq is not None:
+            if liq not in LIQUIDITY_CLASSES:
+                raise BeansError(
+                    f"invalid liquidity {liq!r} "
+                    f"(expected one of {', '.join(LIQUIDITY_CLASSES)})"
+                )
+            if (liq == "noncurrent" and account.type
+                    not in (AccountType.ASSET, AccountType.LIABILITY)):
+                raise BeansError(
+                    "only asset and liability accounts can be marked "
+                    "non-current"
+                )
         sets, params = [], []
         for key, value in fields.items():
             if key not in allowed:
@@ -407,6 +456,10 @@ class Ledger:
                 f"cannot close {account.name}: balance is not zero "
                 "(transfer the remaining balance first)"
             )
+        # A zero-balance account is paid off; drop any attached loan so it
+        # doesn't linger in `loan list` with meaningless terms.
+        if self.loan_for(account) is not None:
+            self.remove_loan(account)
         self.update_account(account, closed=True)
 
     # -- period close ------------------------------------------------------
@@ -1155,6 +1208,81 @@ class Ledger:
             )
         if cur.rowcount == 0:
             raise BeansError(f"no goal named {name!r}")
+
+    # -- loans -----------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_loan(row: sqlite3.Row) -> Loan:
+        return Loan(
+            id=row["loan_id"],
+            account_id=row["account_id"],
+            principal=row["principal"],
+            annual_rate=Decimal(row["annual_rate"]),
+            term_months=row["term_months"],
+            payment=row["payment"],
+            start_date=date.fromisoformat(row["start_date"]),
+            frequency=row["frequency"],
+            account_name=row["name"],
+        )
+
+    def add_loan(self, account: Account, principal: int, annual_rate: Decimal,
+                 term_months: int, payment: int, start_date: date,
+                 frequency: str = "monthly") -> Loan:
+        if account.type is not AccountType.LIABILITY:
+            raise BeansError("loans can only be attached to liability accounts")
+        if principal <= 0:
+            raise BeansError("loan principal must be positive")
+        if annual_rate < 0:
+            raise BeansError("loan interest rate cannot be negative")
+        if term_months <= 0:
+            raise BeansError("loan term must be a positive number of months")
+        if payment <= 0:
+            raise BeansError("loan payment must be positive")
+        if frequency != "monthly":
+            raise BeansError("only monthly loans are supported")
+        try:
+            with self.db:
+                cur = self.db.execute(
+                    "INSERT INTO loans (account_id, principal, annual_rate, "
+                    "term_months, payment, start_date, frequency) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (account.id, principal, str(annual_rate), term_months,
+                     payment, start_date.isoformat(), frequency),
+                )
+        except sqlite3.IntegrityError:
+            raise BeansError(
+                f"account {account.name!r} already has a loan attached"
+            )
+        return Loan(cur.lastrowid, account.id, principal, annual_rate,
+                    term_months, payment, start_date, frequency, account.name)
+
+    def loans(self) -> list[Loan]:
+        rows = self.db.execute(
+            "SELECT l.id AS loan_id, l.account_id, l.principal, "
+            "l.annual_rate, l.term_months, l.payment, l.start_date, "
+            "l.frequency, a.name FROM loans l "
+            "JOIN accounts a ON a.id = l.account_id "
+            "ORDER BY a.name COLLATE NOCASE"
+        ).fetchall()
+        return [self._row_to_loan(r) for r in rows]
+
+    def loan_for(self, account: Account) -> Loan | None:
+        row = self.db.execute(
+            "SELECT l.id AS loan_id, l.account_id, l.principal, "
+            "l.annual_rate, l.term_months, l.payment, l.start_date, "
+            "l.frequency, a.name FROM loans l "
+            "JOIN accounts a ON a.id = l.account_id WHERE l.account_id = ?",
+            (account.id,),
+        ).fetchone()
+        return self._row_to_loan(row) if row else None
+
+    def remove_loan(self, account: Account) -> None:
+        with self.db:
+            cur = self.db.execute(
+                "DELETE FROM loans WHERE account_id = ?", (account.id,)
+            )
+        if cur.rowcount == 0:
+            raise BeansError(f"no loan attached to {account.name}")
 
     # -- investment lots and prices --------------------------------------------
 

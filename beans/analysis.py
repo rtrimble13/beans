@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from beans import loans
 from beans.ledger import Ledger
 from beans.models import AccountType
 from beans.render import Table, bold, money
@@ -21,10 +22,29 @@ def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
     expenses = flow_totals[AccountType.EXPENSE]
     net = income - expenses
 
-    position = led.position(as_of=end)
+    raw = led.balances(as_of=end)
+    position = led.position(raw=raw)
     assets = position["assets"]
     liabilities = position["liabilities"]
     cash = position["cash"]
+
+    # Working-capital view: current assets (by liquidity tag) against current
+    # liabilities (loan-aware split, else tag). The quick ratio's numerator is
+    # *current* cash — a cash account tagged non-current is excluded so quick
+    # assets stay a subset of current assets.
+    current_assets = sum(
+        raw.get(a.id, 0) * AccountType.ASSET.natural_sign
+        for a in accounts.values()
+        if a.type is AccountType.ASSET and a.is_current
+    )
+    current_cash = sum(
+        raw.get(a.id, 0) * AccountType.ASSET.natural_sign
+        for a in accounts.values()
+        if a.type is AccountType.ASSET and a.is_cash and a.is_current
+    )
+    liab_split = loans.classified_liability_split(led, end, raw)
+    current_liabilities = sum(cur for cur, _non in liab_split.values())
+    noncurrent_liabilities = sum(non for _cur, non in liab_split.values())
 
     months = months_in_range(start, end) if start else None
     monthly_expenses = expenses / months if months else None
@@ -52,6 +72,18 @@ def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
         "total_liabilities": liabilities,
         "net_worth": assets - liabilities,
         "cash": cash,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
+        "noncurrent_liabilities": noncurrent_liabilities,
+        "working_capital": current_assets - current_liabilities,
+        "current_ratio": (
+            round(current_assets / current_liabilities, 2)
+            if current_liabilities else None
+        ),
+        "quick_ratio": (
+            round(current_cash / current_liabilities, 2)
+            if current_liabilities else None
+        ),
         "liquidity_months": (
             round(cash / monthly_expenses, 1) if monthly_expenses else None
         ),
@@ -92,7 +124,21 @@ def render_analysis(data: dict, decimals: int, symbol: str) -> str:
     table.add("  Net Worth", money(data["net_worth"], decimals, symbol))
     table.add("  Cash & Equivalents", money(data["cash"], decimals, symbol))
     table.add("", "")
+    table.add(bold("Working Capital"), "")
+    table.add("  Current Assets",
+              money(data["current_assets"], decimals, symbol))
+    table.add("  Current Liabilities",
+              money(data["current_liabilities"], decimals, symbol))
+    table.add("  Working Capital",
+              money(data["working_capital"], decimals, symbol))
+    table.add("", "")
     table.add(bold("Ratios"), "")
+
+    def ratio(value) -> str:
+        return f"{value:.2f}" if value is not None else "n/a"
+
+    table.add("  Current Ratio", ratio(data["current_ratio"]))
+    table.add("  Quick Ratio", ratio(data["quick_ratio"]))
     months = data["liquidity_months"]
     table.add("  Liquidity Runway",
               f"{months:.1f} months of expenses" if months is not None

@@ -27,7 +27,7 @@ EXPORT_FORMAT = "beans-export"
 
 # Entity collections reported in the import summary, in load order.
 SUMMARY_KEYS = ("accounts", "transactions", "budgets", "recurring", "goals",
-                "import_rules", "lots", "prices", "fx_rates")
+                "loans", "import_rules", "lots", "prices", "fx_rates")
 
 
 def restore_ledger(led: Ledger, data: dict) -> dict:
@@ -72,7 +72,8 @@ def restore_ledger(led: Ledger, data: dict) -> dict:
         led.add_account(a["name"], type_, is_cash=a.get("is_cash", False),
                         cf_category=cf_category,
                         description=a.get("description", ""),
-                        currency=a.get("currency"))
+                        currency=a.get("currency"),
+                        liquidity=a.get("liquidity", "current"))
         if a.get("closed"):
             closed_names.append(a["name"])
     by_name = {a.name: a for a in led.accounts(include_closed=True)}
@@ -136,6 +137,11 @@ def restore_ledger(led: Ledger, data: dict) -> dict:
                     money(lot["cost"]), parse_date(lot["acquired"]))
     for pr in data.get("prices", []):
         led.set_price(pr["symbol"], parse_date(pr["date"]), money(pr["price"]))
+    for ln in data.get("loans", []):
+        led.add_loan(account(ln["account"]), money(ln["principal"]),
+                     Decimal(str(ln["annual_rate"])), ln["term_months"],
+                     money(ln["payment"]), parse_date(ln["start_date"]),
+                     frequency=ln.get("frequency", "monthly"))
 
     # -- recurring rules (definition + occurrence counter + active state) --
     for rec in data.get("recurring", []):

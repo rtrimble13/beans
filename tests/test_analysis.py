@@ -42,9 +42,51 @@ def test_analyze_ratios_exact_values(led):
     # 100 * 400000 / (2000_00 * 12) = 100 * 400000 / 2_400_000 = 16.666… -> 16.7
     assert data["debt_to_annual_income_pct"] == 16.7
 
+    # Working capital: the only liability (Liabilities:Loans) is non-current by
+    # default, so current liabilities are zero and the ratios degrade to None.
+    assert data["current_assets"] == 1_300_000   # checking is current
+    assert data["current_liabilities"] == 0
+    assert data["working_capital"] == 1_300_000
+    assert data["current_ratio"] is None
+    assert data["quick_ratio"] is None
+
     [top] = data["top_expenses"]
     assert top == {"account": "Expenses:Housing:Rent",
                    "amount": 300_000, "pct_of_income": 50.0}
+
+
+def test_analyze_current_and_quick_ratios(led):
+    # Cash 13,000 against a 4,000 credit-card balance (current by default).
+    post(led, date(2026, 1, 1), "opening",
+         ("Assets:Checking", 1_300_000),
+         ("Liabilities:Credit Card", -400_000),
+         ("Equity:Opening Balances", -900_000))
+    data = analyze(led, date(2026, 1, 1), date(2026, 3, 31), "2026-Q1")
+    assert data["current_assets"] == 1_300_000
+    assert data["current_liabilities"] == 400_000
+    assert data["working_capital"] == 900_000
+    assert data["current_ratio"] == 3.25   # 1_300_000 / 400_000
+    assert data["quick_ratio"] == 3.25     # cash 1_300_000 / 400_000
+
+
+def test_quick_ratio_excludes_noncurrent_cash(led):
+    # A cash account marked non-current must drop out of the quick ratio, so
+    # quick assets stay a subset of current assets (quick <= current ratio).
+    led.update_account(led.find_account("Assets:Savings"),
+                       liquidity="noncurrent")
+    post(led, date(2026, 1, 1), "opening",
+         ("Assets:Checking", 400_000),       # current cash
+         ("Assets:Savings", 600_000),        # cash, but tagged non-current
+         ("Liabilities:Credit Card", -200_000),
+         ("Equity:Opening Balances", -800_000))
+    data = analyze(led, date(2026, 1, 1), date(2026, 3, 31), "2026-Q1")
+    # Current assets exclude the non-current savings; cash (total) still 10,000.
+    assert data["current_assets"] == 400_000
+    assert data["cash"] == 1_000_000
+    assert data["current_ratio"] == 2.0   # 400_000 / 200_000
+    # Quick ratio uses current cash only (checking), not total cash.
+    assert data["quick_ratio"] == 2.0     # 400_000 / 200_000
+    assert data["quick_ratio"] <= data["current_ratio"]
 
 
 def test_analyze_null_denominator_paths(led):
@@ -56,4 +98,7 @@ def test_analyze_null_denominator_paths(led):
     assert data["liquidity_months"] is None          # months is None
     assert data["debt_to_assets_pct"] is None        # assets == 0
     assert data["debt_to_annual_income_pct"] is None  # monthly_income None
+    assert data["current_ratio"] is None             # current liabilities 0
+    assert data["quick_ratio"] is None
+    assert data["working_capital"] == 0
     assert data["top_expenses"] == []
