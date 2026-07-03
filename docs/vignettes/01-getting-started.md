@@ -43,28 +43,31 @@ beans account list
 ```
 
 ```text
-Account                        Type       Flags  Balance
---------------------------------------------------------
-Assets:Cash                    asset      cash      0.00
-Assets:Checking                asset      cash      0.00
-Assets:Savings                 asset      cash      0.00
-Assets:Investments:Brokerage   asset                0.00
-Assets:Investments:Retirement  asset                0.00
-Equity:Opening Balances        equity               0.00
-Expenses:Entertainment         expense              0.00
-Expenses:Food:Dining           expense              0.00
-Expenses:Food:Groceries        expense              0.00
-Expenses:Housing:Rent          expense              0.00
+Account                        Type       Flags       Balance
+-------------------------------------------------------------
+Assets:Cash                    asset      cash           0.00
+Assets:Checking                asset      cash           0.00
+Assets:Investments:Brokerage   asset      noncurrent     0.00
+Assets:Investments:Retirement  asset      noncurrent     0.00
+Assets:Savings                 asset      cash           0.00
+Equity:Opening Balances        equity                    0.00
+Expenses:Entertainment         expense                   0.00
+Expenses:Food:Dining           expense                   0.00
+Expenses:Food:Groceries        expense                   0.00
 ...
-Income:Salary                  income               0.00
-Liabilities:Credit Card        liability            0.00
-Liabilities:Loans              liability            0.00
+Income:Salary                  income                    0.00
+Liabilities:Credit Card        liability                 0.00
+Liabilities:Loans              liability  noncurrent     0.00
 ```
 
 Accounts are **hierarchical** (`Expenses:Food:Groceries`) and **typed** — every
 account is an `asset`, `liability`, `equity`, `income`, or `expense`. The `cash`
 flag marks accounts the cash-flow statement should explain (checking, savings,
-wallet). Reshape the chart freely:
+wallet). The `noncurrent` flag marks **long-term** assets and liabilities —
+retirement, a brokerage, a mortgage — so the balance sheet can split current
+from non-current (more on that below and in the
+**[Loans & liquidity](05-loans-and-liquidity.md)** walkthrough); everything else
+is `current` by default. Reshape the chart freely:
 
 ```sh
 beans account add Expenses:Pets --type expense --desc "Vet, food, toys"
@@ -254,25 +257,37 @@ BALANCE SHEET
 As of: 2026-01-31
 
 Assets
-  Checking              7,749.75
-  Savings              11,000.00
---------------------------------
-Total Assets          $18,749.75
+  Current Assets
+    Checking                      7,749.75
+    Savings                      11,000.00
+  Current Assets subtotal       $18,749.75
+------------------------------------------
+Total Assets                    $18,749.75
 
 Liabilities
-  Credit Card           1,254.20
---------------------------------
-Total Liabilities      $1,254.20
+  Current Liabilities
+    Credit Card                   1,254.20
+  Current Liabilities subtotal   $1,254.20
+------------------------------------------
+Total Liabilities                $1,254.20
 
 Equity
-  Opening Balances     13,800.00
-  Retained Earnings     3,695.55
---------------------------------
-Total Equity          $17,495.55
---------------------------------
-Liabilities + Equity  $18,749.75
-Net Worth             $17,495.55
+  Opening Balances               13,800.00
+  Retained Earnings               3,695.55
+------------------------------------------
+Total Equity                    $17,495.55
+------------------------------------------
+Liabilities + Equity            $18,749.75
+Net Worth                       $17,495.55
 ```
+
+The balance sheet is **classified**: assets and liabilities are split into
+**current** (realizable or due within a year) and **non-current** sections.
+Everything here is current — all we own is cash and all we owe is a credit-card
+balance — so each side has a single current block. Add a retirement account or a
+mortgage and a **Non-current** section appears; the
+**[Loans & liquidity](05-loans-and-liquidity.md)** walkthrough shows that in
+full. Pass `--flat` for the older by-type-only listing.
 
 Notice **Retained Earnings** of $3,695.55 — exactly January's net income.
 `beans` computes it on the fly so that **Assets = Liabilities + Equity** always

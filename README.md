@@ -91,6 +91,9 @@ captured output:
    bank CSV and tie out to your statement.
 4. [Recurring, goals & investing](docs/vignettes/04-recurring-goals-investing.md)
    — automate bills, set goals, and track investments.
+5. [Loans & liquidity](docs/vignettes/05-loans-and-liquidity.md) — classify
+   current vs non-current, finance a loan, and read a classified balance sheet
+   with liquidity ratios.
 
 The rest of this README is the command reference. For the full instruction
 manual — every command, every flag, with parameter tables and best practices
