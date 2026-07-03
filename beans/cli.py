@@ -912,7 +912,8 @@ def cmd_loan_add(args) -> int:
 
 def cmd_loan_list(args) -> int:
     led = _open(args)
-    data = loans.loans_report(led)
+    as_of = parse_date(args.date, default=date.today())
+    data = loans.loans_report(led, as_of)
     _emit(args, led, data, loans.render_loans)
     return 0
 
@@ -1603,6 +1604,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_loan_add)
     p = loan_sub.add_parser("list",
                             help="loans with current/non-current split")
+    p.add_argument("--date", "-d", help="as-of date (default: today)")
     _add_json_arg(p)
     p.set_defaults(func=cmd_loan_list)
     p = loan_sub.add_parser("show", help="amortization schedule for a loan")

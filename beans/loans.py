@@ -78,7 +78,7 @@ def term_for(principal: int, rate: Decimal, payment: int) -> int:
     )
 
 
-def schedule(loan: Loan, as_of: date | None = None) -> list[dict]:
+def schedule(loan: Loan) -> list[dict]:
     """The amortization schedule: one row per payment with date, payment,
     interest, principal, and remaining balance (all minor units)."""
     rate = periodic_rate(loan.annual_rate)
@@ -90,8 +90,10 @@ def schedule(loan: Loan, as_of: date | None = None) -> list[dict]:
         when = add_months_clamped(loan.start_date, i)
         interest = _round_minor(Decimal(balance) * rate)
         principal_paid = loan.payment - interest
-        # The final payment trues up whatever rounding left behind.
-        if principal_paid >= balance:
+        # The final scheduled payment (or any overshoot) absorbs rounding so
+        # the balance always reaches zero — a level payment that rounds *down*
+        # would otherwise strand a residual cent at the end of the term.
+        if principal_paid >= balance or i == loan.term_months - 1:
             principal_paid = balance
         pay = interest + principal_paid
         balance -= principal_paid
@@ -102,20 +104,20 @@ def schedule(loan: Loan, as_of: date | None = None) -> list[dict]:
             "interest": interest,
             "principal": principal_paid,
             "balance": balance,
-            "future": as_of is None or when > as_of,
         })
     return rows
 
 
-def current_portion(loan: Loan, as_of: date, outstanding: int) -> int:
+def current_portion(loan: Loan, as_of: date, outstanding: int,
+                    sched: list[dict] | None = None) -> int:
     """Principal scheduled to be repaid in the year after `as_of`, capped at
     the actual `outstanding` balance. If the schedule has no payments left
     after `as_of` but a balance remains, the whole balance is current (it is
-    due or overdue)."""
+    due or overdue). Pass `sched` to reuse an already-built schedule."""
     if outstanding <= 0:
         return 0
     window_end = add_months_clamped(as_of, 12)
-    rows = schedule(loan)
+    rows = sched if sched is not None else schedule(loan)
     upcoming = [r for r in rows if r["date"] > as_of]
     if not upcoming:
         return outstanding
@@ -129,11 +131,12 @@ def classified_liability_split(
     """Map each liability account id to (current, non-current) natural-sign
     amounts. Accounts with a loan are split by the amortization schedule;
     the rest fall back to their `liquidity` tag."""
+    loans_by_account = {ln.account_id: ln for ln in led.loans()}
     split: dict[int, tuple[int, int]] = {}
     for account in led.accounts(type_=AccountType.LIABILITY,
                                 include_closed=True):
         balance = raw.get(account.id, 0) * account.type.natural_sign
-        loan = led.loan_for(account)
+        loan = loans_by_account.get(account.id)
         if loan is not None and balance > 0:
             current = current_portion(loan, as_of, balance)
             split[account.id] = (current, balance - current)
@@ -180,13 +183,13 @@ def pay(led: Ledger, account: Account, cash: Account, when: date,
     if principal >= outstanding:  # final payoff trues up to the real balance
         principal = outstanding
         pay_amount = interest + principal
-    interest_acct = _interest_account(led)
     postings = [
         Posting(account_id=account.id, amount=principal),
         Posting(account_id=cash.id, amount=-pay_amount),
     ]
-    if interest:
-        postings.append(Posting(account_id=interest_acct.id, amount=interest))
+    if interest:  # only touch Expenses:Interest when there is interest to book
+        postings.append(Posting(account_id=_interest_account(led).id,
+                                amount=interest))
     txn = led.add_transaction(
         when, f"Loan payment: {account.name}", postings, tags=["loan"])
     return {
@@ -205,8 +208,8 @@ def loans_report(led: Ledger, as_of: date | None = None) -> dict:
     for loan in led.loans():
         account = led.find_account(loan.account_name)
         balance = raw.get(account.id, 0) * account.type.natural_sign
-        current = current_portion(loan, as_of, balance)
         sched = schedule(loan)
+        current = current_portion(loan, as_of, balance, sched=sched)
         remaining = sum(1 for r in sched if r["date"] > as_of)
         rows.append({
             "account": loan.account_name,
@@ -241,8 +244,8 @@ def render_loans(data: dict, decimals: int, symbol: str) -> str:
     return "\n".join(lines)
 
 
-def schedule_report(loan: Loan, as_of: date | None = None) -> dict:
-    rows = schedule(loan, as_of=as_of)
+def schedule_report(loan: Loan) -> dict:
+    rows = schedule(loan)
     return {
         "report": "loan_schedule",
         "account": loan.account_name,

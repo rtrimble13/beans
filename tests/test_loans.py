@@ -37,6 +37,16 @@ def test_schedule_fully_amortizes():
         assert r["payment"] == r["interest"] + r["principal"]
 
 
+def test_schedule_amortizes_when_payment_rounds_down():
+    # $100 at 0% over 3 months: level payment rounds down to 33.33, so the
+    # final payment must true up (33.33 + 33.33 + 33.34) or a cent is stranded.
+    loan = make_loan(principal=10000, rate="0", term=3, payment=3333)
+    sched = loans.schedule(loan)
+    assert sched[-1]["balance"] == 0
+    assert sum(r["principal"] for r in sched) == 10000
+    assert sched[-1]["principal"] == 3334  # absorbs the rounding
+
+
 def test_term_for_inverts_payment_for():
     rate = loans.periodic_rate(Decimal("0.0625"))
     assert loans.term_for(3000000, rate, 58348) == 60
@@ -108,3 +118,24 @@ def test_pay_splits_interest_and_principal(led):
     # The books still balance and interest hit Expenses:Interest.
     interest_acct = led.find_account("Expenses:Interest")
     assert led.balances()[interest_acct.id] == 15625
+
+
+def test_pay_final_payment_zeros_the_balance(led):
+    # A 0% $100 loan over 3 months; scheduled payment 33.33 leaves a residual
+    # cent, so the final payment must true up to clear the balance exactly.
+    post(led, date(2026, 1, 1), "open",
+         ("Assets:Checking", 10000),
+         ("Liabilities:Loans", -10000))
+    account = led.find_account("Liabilities:Loans")
+    led.add_loan(account, 10000, Decimal("0"), 3, 3333, date(2026, 1, 1))
+    cash = led.find_account("Assets:Checking")
+    result = None
+    for month in range(2, 8):  # keep paying until the loan closes
+        if -led.balances().get(account.id, 0) <= 0:
+            break
+        result = loans.pay(led, account, cash, date(2026, month, 1))
+    assert -led.balances().get(account.id, 0) == 0   # fully paid off
+    assert result["balance_after"] == 0
+    # A 0% loan never books interest, so no Expenses:Interest account exists.
+    with pytest.raises(BeansError):
+        led.find_account("Expenses:Interest")

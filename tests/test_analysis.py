@@ -69,6 +69,26 @@ def test_analyze_current_and_quick_ratios(led):
     assert data["quick_ratio"] == 3.25     # cash 1_300_000 / 400_000
 
 
+def test_quick_ratio_excludes_noncurrent_cash(led):
+    # A cash account marked non-current must drop out of the quick ratio, so
+    # quick assets stay a subset of current assets (quick <= current ratio).
+    led.update_account(led.find_account("Assets:Savings"),
+                       liquidity="noncurrent")
+    post(led, date(2026, 1, 1), "opening",
+         ("Assets:Checking", 400_000),       # current cash
+         ("Assets:Savings", 600_000),        # cash, but tagged non-current
+         ("Liabilities:Credit Card", -200_000),
+         ("Equity:Opening Balances", -800_000))
+    data = analyze(led, date(2026, 1, 1), date(2026, 3, 31), "2026-Q1")
+    # Current assets exclude the non-current savings; cash (total) still 10,000.
+    assert data["current_assets"] == 400_000
+    assert data["cash"] == 1_000_000
+    assert data["current_ratio"] == 2.0   # 400_000 / 200_000
+    # Quick ratio uses current cash only (checking), not total cash.
+    assert data["quick_ratio"] == 2.0     # 400_000 / 200_000
+    assert data["quick_ratio"] <= data["current_ratio"]
+
+
 def test_analyze_null_denominator_paths(led):
     # Empty ledger, unbounded period: every denominator is zero or unknown,
     # so each ratio degrades to None rather than dividing by zero.

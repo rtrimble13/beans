@@ -29,11 +29,18 @@ def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
     cash = position["cash"]
 
     # Working-capital view: current assets (by liquidity tag) against current
-    # liabilities (loan-aware split, else tag).
+    # liabilities (loan-aware split, else tag). The quick ratio's numerator is
+    # *current* cash — a cash account tagged non-current is excluded so quick
+    # assets stay a subset of current assets.
     current_assets = sum(
         raw.get(a.id, 0) * AccountType.ASSET.natural_sign
         for a in accounts.values()
         if a.type is AccountType.ASSET and a.is_current
+    )
+    current_cash = sum(
+        raw.get(a.id, 0) * AccountType.ASSET.natural_sign
+        for a in accounts.values()
+        if a.type is AccountType.ASSET and a.is_cash and a.is_current
     )
     liab_split = loans.classified_liability_split(led, end, raw)
     current_liabilities = sum(cur for cur, _non in liab_split.values())
@@ -74,7 +81,7 @@ def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
             if current_liabilities else None
         ),
         "quick_ratio": (
-            round(cash / current_liabilities, 2)
+            round(current_cash / current_liabilities, 2)
             if current_liabilities else None
         ),
         "liquidity_months": (

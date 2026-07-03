@@ -714,7 +714,8 @@ def test_loan_lifecycle(capsys, ledger_file):
                        "--term", "60", "--start", "2026-01-01")
     assert code == 0
     assert "583.48" in out  # derived payment
-    code, out, _ = run(capsys, ledger_file, "loan", "list", "--json")
+    code, out, _ = run(capsys, ledger_file, "loan", "list", "--date",
+                       "2026-06-30", "--json")
     [row] = json.loads(out)["rows"]
     assert row["balance"] == "30000.00"
     # Current + non-current portions tie to the balance.
