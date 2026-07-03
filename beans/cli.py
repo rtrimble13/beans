@@ -899,14 +899,30 @@ def cmd_loan_add(args) -> int:
         term = loans.term_for(principal, periodic, payment)
     if payment is None:
         payment = loans.payment_for(principal, periodic, term)
+    # A payment that doesn't clear the first month's interest never amortizes
+    # (the balance grows). term_for enforces this when it derives the term;
+    # apply it here too so a hand-supplied --term + --payment can't slip a
+    # non-amortizing loan through. (Balloon loans, where the payment covers
+    # interest but not the full principal within the term, remain valid.)
+    if rate > 0 and Decimal(payment) <= Decimal(principal) * periodic:
+        raise BeansError(
+            f"payment {_fmt(led, payment)} does not cover the first month's "
+            f"interest on {_fmt(led, principal)} at "
+            f"{args.rate.rstrip('%')}% — the loan would never amortize"
+        )
     loan = led.add_loan(account, principal, rate, term, payment, start)
-    # Mark the account non-current so the un-split default (if the balance
-    # sheet ever falls back to the tag) matches a long-term loan.
-    if account.liquidity != "noncurrent":
+    # A loan spanning more than a year is long-term: mark the account
+    # non-current (the tag the balance sheet falls back to when the loan
+    # isn't consulted) and say so. A loan due within a year is short-term, so
+    # leave the account's classification untouched.
+    long_term = loan.term_months > 12
+    marked = long_term and account.liquidity != "noncurrent"
+    if marked:
         led.update_account(account, liquidity="noncurrent")
+    note = " (marked non-current)" if marked else ""
     print(f"Attached loan to {account.name}: "
           f"{_fmt(led, loan.principal)} at {args.rate.rstrip('%')}% over "
-          f"{loan.term_months} months, payment {_fmt(led, loan.payment)}")
+          f"{loan.term_months} months, payment {_fmt(led, loan.payment)}{note}")
     return 0
 
 

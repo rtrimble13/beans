@@ -749,6 +749,42 @@ def test_loan_lifecycle(capsys, ledger_file):
     assert json.loads(out)["rows"] == []
 
 
+def test_loan_add_marks_noncurrent_only_when_long_term(capsys, ledger_file):
+    def liq(name):
+        _, out, _ = run(capsys, ledger_file, "account", "list", "--json")
+        return {a["name"]: a["liquidity"] for a in json.loads(out)}[name]
+
+    run(capsys, ledger_file, "account", "add", "Liabilities:Car",
+        "--type", "liability")
+    run(capsys, ledger_file, "account", "add", "Liabilities:Payday",
+        "--type", "liability")
+
+    # A >12-month loan is long-term: mark the account non-current and say so.
+    _, out, _ = run(capsys, ledger_file, "loan", "add", "--account", "Car",
+                    "--principal", "20000", "--rate", "5", "--term", "48",
+                    "--start", "2026-01-01")
+    assert "marked non-current" in out
+    assert liq("Liabilities:Car") == "noncurrent"
+
+    # A <=12-month loan is short-term: leave the account classification alone.
+    _, out, _ = run(capsys, ledger_file, "loan", "add", "--account", "Payday",
+                    "--principal", "1200", "--rate", "10", "--term", "6",
+                    "--start", "2026-01-01")
+    assert "marked non-current" not in out
+    assert liq("Liabilities:Payday") == "current"
+
+
+def test_loan_add_rejects_non_amortizing_payment(capsys, ledger_file):
+    run(capsys, ledger_file, "account", "add", "Liabilities:BadLoan",
+        "--type", "liability")
+    # Payment below the first month's interest (20000 * 10%/12 = 166.67).
+    code, _, err = run(capsys, ledger_file, "loan", "add", "--account",
+                       "BadLoan", "--principal", "20000", "--rate", "10",
+                       "--term", "60", "--payment", "150")
+    assert code == 1
+    assert "never amortize" in err
+
+
 def test_group_command_shows_help(capsys, ledger_file):
     code = main(["-f", ledger_file, "tx"])
     out = capsys.readouterr().out

@@ -1244,8 +1244,11 @@ beans loan add --account ACCOUNT --principal AMOUNT --rate PERCENT
 | `--payment AMOUNT` | Monthly payment. Omit to derive it from `--term`. |
 | `-s, --start DATE` | Date of the first payment. Default: today. |
 
-Give either `--term` or `--payment`; `beans` solves for the other. Attaching a
-loan also marks the account non-current. One loan per account.
+Give either `--term` or `--payment`; `beans` solves for the other (a payment
+that doesn't cover the first month's interest is rejected, since it would never
+amortize). Attaching a loan whose term runs beyond a year marks the account
+non-current and says so; a loan due within a year is short-term and leaves the
+account's classification untouched. One loan per account.
 
 ### `loan list`
 
