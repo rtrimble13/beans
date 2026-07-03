@@ -456,6 +456,10 @@ class Ledger:
                 f"cannot close {account.name}: balance is not zero "
                 "(transfer the remaining balance first)"
             )
+        # A zero-balance account is paid off; drop any attached loan so it
+        # doesn't linger in `loan list` with meaningless terms.
+        if self.loan_for(account) is not None:
+            self.remove_loan(account)
         self.update_account(account, closed=True)
 
     # -- period close ------------------------------------------------------

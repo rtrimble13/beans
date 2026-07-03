@@ -188,6 +188,25 @@ def test_loan_crud(led):
     assert led.loan_for(account) is None
 
 
+def test_closing_account_drops_its_loan(led):
+    from decimal import Decimal
+
+    account = led.find_account("Liabilities:Loans")
+    # Draw then repay so the balance is zero and the account can close.
+    led.add_transaction(date(2026, 1, 1), "draw", [
+        Posting(account_id=led.find_account("Assets:Checking").id,
+                amount=100000),
+        Posting(account_id=account.id, amount=-100000)])
+    led.add_loan(account, 100000, Decimal("0.05"), 12, 8561, date(2026, 1, 1))
+    led.add_transaction(date(2026, 2, 1), "payoff", [
+        Posting(account_id=account.id, amount=100000),
+        Posting(account_id=led.find_account("Assets:Checking").id,
+                amount=-100000)])
+    led.close_account(account)
+    assert led.loan_for(account) is None
+    assert led.loans() == []
+
+
 def test_budget_crud(led):
     groceries = led.find_account("Groceries")
     led.set_budget(groceries, 50000, "monthly")
