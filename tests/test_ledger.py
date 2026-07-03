@@ -118,6 +118,76 @@ def test_cash_flag_only_on_assets(led):
         led.add_account("Income:Weird", AccountType.INCOME, is_cash=True)
 
 
+def test_liquidity_default_and_starter_chart(led):
+    # Everything defaults to current; the starter chart pre-marks the obvious
+    # long-term accounts.
+    assert led.find_account("Assets:Checking").liquidity == "current"
+    assert led.find_account("Assets:Checking").is_current
+    assert led.find_account("Assets:Investments:Retirement").liquidity == \
+        "noncurrent"
+    assert led.find_account("Liabilities:Loans").liquidity == "noncurrent"
+
+
+def test_liquidity_validation_and_update(led):
+    # Non-current is only meaningful for assets and liabilities.
+    with pytest.raises(BeansError, match="only asset and liability"):
+        led.add_account("Income:Weird", AccountType.INCOME,
+                        liquidity="noncurrent")
+    with pytest.raises(BeansError, match="invalid liquidity"):
+        led.add_account("Assets:Odd", AccountType.ASSET, liquidity="soon")
+    savings = led.find_account("Assets:Savings")
+    led.update_account(savings, liquidity="noncurrent")
+    assert led.find_account("Assets:Savings").liquidity == "noncurrent"
+    salary = led.find_account("Income:Salary")
+    with pytest.raises(BeansError, match="only asset and liability"):
+        led.update_account(salary, liquidity="noncurrent")
+
+
+def test_liquidity_migration_backfills_current(tmp_path):
+    import sqlite3
+
+    from beans.ledger import Ledger
+
+    # An old ledger whose accounts table predates the liquidity column.
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, "
+        "name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, "
+        "is_cash INTEGER NOT NULL DEFAULT 0, cf_category TEXT, "
+        "closed INTEGER NOT NULL DEFAULT 0, "
+        "description TEXT NOT NULL DEFAULT '');"
+        "INSERT INTO accounts (name, type) VALUES ('Assets:Old', 'asset');"
+    )
+    con.commit()
+    con.close()
+
+    led = Ledger(path)  # opening runs the migration
+    assert led.find_account("Assets:Old").liquidity == "current"
+    led.close()
+
+
+def test_loan_crud(led):
+    from decimal import Decimal
+
+    account = led.find_account("Liabilities:Loans")
+    loan = led.add_loan(account, 3000000, Decimal("0.0625"), 60, 58348,
+                        date(2026, 1, 1))
+    assert loan.account_name == "Liabilities:Loans"
+    assert led.loan_for(account).payment == 58348
+    assert [ln.account_name for ln in led.loans()] == ["Liabilities:Loans"]
+    # One loan per account.
+    with pytest.raises(BeansError, match="already has a loan"):
+        led.add_loan(account, 100, Decimal("0.05"), 12, 10, date(2026, 1, 1))
+    # Loans only attach to liabilities.
+    with pytest.raises(BeansError, match="liability accounts"):
+        led.add_loan(led.find_account("Assets:Checking"), 100,
+                     Decimal("0.05"), 12, 10, date(2026, 1, 1))
+    led.remove_loan(account)
+    assert led.loan_for(account) is None
+
+
 def test_budget_crud(led):
     groceries = led.find_account("Groceries")
     led.set_budget(groceries, 50000, "monthly")

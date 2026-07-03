@@ -71,6 +71,34 @@ def test_balance_sheet_balances(led):
             == data["total_liabilities"] + data["total_equity"])
 
 
+def test_balance_sheet_classified_split(led):
+    from datetime import date as _date
+    from decimal import Decimal
+
+    seed(led)
+    # Retirement is non-current by default; attach a loan to a liability.
+    loans_acct = led.find_account("Liabilities:Loans")
+    post(led, _date(2026, 3, 1), "car loan draw",
+         ("Assets:Checking", 3000000), ("Liabilities:Loans", -3000000))
+    led.add_loan(loans_acct, 3000000, Decimal("0.0625"), 60, 58348,
+                 _date(2026, 3, 1))
+    data = reports.balance_sheet(led, _date(2026, 12, 31))
+
+    # Buckets re-sum to the type totals.
+    assert (data["total_assets_current"] + data["total_assets_noncurrent"]
+            == data["total_assets"])
+    assert (data["total_liabilities_current"]
+            + data["total_liabilities_noncurrent"]
+            == data["total_liabilities"])
+    # Retirement landed in non-current assets; the credit card (current tag,
+    # no loan) is wholly current.
+    assert "Assets:Investments:Retirement" in data["assets_noncurrent"]
+    assert "Liabilities:Credit Card" in data["liabilities_current"]
+    # The loan liability is split across both buckets.
+    assert data["liabilities_current"]["Liabilities:Loans"] > 0
+    assert data["liabilities_noncurrent"]["Liabilities:Loans"] > 0
+
+
 def test_cash_flow_ties_to_cash_delta(led):
     seed(led)
     start, end = date(2026, 1, 1), date(2026, 12, 31)

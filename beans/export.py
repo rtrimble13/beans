@@ -54,6 +54,7 @@ def export_json(led: Ledger) -> dict:
                 "cashflow": a.cashflow,
                 "closed": a.closed,
                 "currency": a.currency,
+                "liquidity": a.liquidity,
                 "description": a.description,
             }
             for a in accounts
@@ -111,6 +112,18 @@ def export_json(led: Ledger) -> dict:
                 "target_date": g["target_date"].isoformat(),
             }
             for g in led.goals()
+        ],
+        "loans": [
+            {
+                "account": loan.account_name,
+                "principal": major(loan.principal),
+                "annual_rate": str(loan.annual_rate),
+                "term_months": loan.term_months,
+                "payment": major(loan.payment),
+                "start_date": loan.start_date.isoformat(),
+                "frequency": loan.frequency,
+            }
+            for loan in led.loans()
         ],
         "import_rules": [
             {"pattern": pattern, "account": account.name}

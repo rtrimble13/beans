@@ -167,7 +167,7 @@ housing, food, transportation, etc.) — see `beans account list` right after
 
 ```
 beans account add NAME --type TYPE [--cash] [--cashflow ACTIVITY]
-                        [--currency CODE] [--desc TEXT]
+                        [--currency CODE] [--noncurrent] [--desc TEXT]
 ```
 
 | Argument/Flag | Description |
@@ -177,6 +177,7 @@ beans account add NAME --type TYPE [--cash] [--cashflow ACTIVITY]
 | `--cash` | Mark as cash/cash-equivalent (assets only). Drives the statement of cash flows. |
 | `--cashflow {operating,investing,financing}` | Override which cash-flow activity this account's flows are classified under. |
 | `--currency CODE` | Denominate the account in a foreign ISO currency (assets and liabilities only), e.g. `EUR`. |
+| `--noncurrent` | Classify the account as non-current (long-term) on the balance sheet. Assets and liabilities only; everything defaults to `current`. |
 | `--desc TEXT` | Free-text description. |
 
 ### `account list`
@@ -209,13 +210,15 @@ and balance-affecting commands unless `--all` is given.
 
 ```
 beans account modify NAME [--rename NEW_NAME] [--cash | --no-cash]
-                          [--cashflow ACTIVITY] [--desc TEXT]
+                          [--current | --noncurrent] [--cashflow ACTIVITY]
+                          [--desc TEXT]
 ```
 
 | Flag | Description |
 |---|---|
 | `--rename NEW_NAME` | Rename the account (all history follows). |
 | `--cash` / `--no-cash` | Toggle the cash-equivalent flag (mutually exclusive). |
+| `--current` / `--noncurrent` | Set the balance-sheet liquidity class (mutually exclusive; assets and liabilities only). |
 | `--cashflow {operating,investing,financing}` | Reclassify the account's cash-flow activity. |
 | `--desc TEXT` | Replace the description. |
 
@@ -487,13 +490,24 @@ period of equal length.
 ### `report balance` (alias `bs`)
 
 ```
-beans report balance [--date DATE] [--json]
+beans report balance [--date DATE] [--flat] [--json]
 ```
 
 The balance sheet as of a date (default: today). Computes **retained
 earnings** on the fly — cumulative net income never formally closed — so
 Assets = Liabilities + Equity always holds without requiring you to
 manually close the books each period.
+
+By default the sheet is **classified**: assets and liabilities are each split
+into **current** and **non-current** sections. Assets follow their liquidity
+tag (`account add/modify --current/--noncurrent`); a liability with an attached
+loan (see `loan add`) is split by its amortization schedule — the principal due
+within twelve months is current, the rest non-current — and other liabilities
+follow their tag. The split is applied to the true ledger balance, so the two
+buckets always sum to the type total. Pass `--flat` for the old by-type-only
+listing. The `--json` output always carries both the flat totals (`assets`,
+`liabilities`, …) and the split keys (`assets_current`, `liabilities_noncurrent`,
+…).
 
 ### `report cashflow` (alias `cf`)
 
@@ -756,9 +770,13 @@ beans analyze [--period SPEC | --from/--to] [--json]
 ```
 
 Financial ratios and expense breakdown for a household, computed the way
-you'd compute them for a company: savings rate (margin), liquidity runway
-in months of expenses, debt-to-assets, debt-to-annual-income, and top
-expense categories as a percent of income.
+you'd compute them for a company: savings rate (margin), **working capital**
+(current assets − current liabilities) with the **current ratio** (current
+assets / current liabilities) and **quick ratio** (cash / current liabilities),
+liquidity runway in months of expenses, debt-to-assets, debt-to-annual-income,
+and top expense categories as a percent of income. The current/quick ratios use
+the same current vs non-current split as the classified balance sheet, so they
+sharpen as you tag long-term accounts and attach loans.
 
 ### Best practices
 
@@ -1200,6 +1218,74 @@ Lists recorded prices, optionally filtered to one symbol.
   investment account you're tracking this way — mixing in plain
   `tx add`/`transfer` postings against the same account will make `invest
   mark`'s book-vs-market assumption incorrect.
+
+---
+
+## `loan` — amortizing loans
+
+Attach amortization terms to a liability account. `beans` derives the payment
+schedule and, for the classified balance sheet, splits the account's balance
+into a current portion (principal due within a year) and a non-current
+remainder.
+
+### `loan add`
+
+```
+beans loan add --account ACCOUNT --principal AMOUNT --rate PERCENT
+               (--term N | --payment AMOUNT) [--start DATE]
+```
+
+| Flag | Description |
+|---|---|
+| `-a, --account ACCOUNT` (required) | Liability account the loan is drawn against (fuzzy match). |
+| `-p, --principal AMOUNT` (required) | Original loan amount. |
+| `-r, --rate PERCENT` (required) | Nominal annual interest rate as a percent, e.g. `6.25`. |
+| `-n, --term N` | Number of monthly payments. Omit to derive it from `--payment`. |
+| `--payment AMOUNT` | Monthly payment. Omit to derive it from `--term`. |
+| `-s, --start DATE` | Date of the first payment. Default: today. |
+
+Give either `--term` or `--payment`; `beans` solves for the other. Attaching a
+loan also marks the account non-current. One loan per account.
+
+### `loan list`
+
+```
+beans loan list [--json]
+```
+
+Every loan with its rate, payment, current balance, current portion,
+non-current portion, and payments remaining.
+
+### `loan show`
+
+```
+beans loan show ACCOUNT [--json]
+```
+
+The full amortization schedule — per payment: date, payment, interest,
+principal, and remaining balance — plus total interest over the life of the loan.
+
+### `loan pay`
+
+```
+beans loan pay ACCOUNT [--amount AMOUNT] [--from ACCOUNT] [--date DATE]
+```
+
+Posts one payment as a balanced transaction: interest (computed on the actual
+outstanding balance) to `Expenses:Interest`, the remaining principal against the
+liability, and the total out of a cash account (`--from`, else your default cash
+account). `--amount` overrides the scheduled payment (e.g. an extra-principal
+month). The final payment trues up to the exact remaining balance.
+
+### Best practices
+
+- Attach a loan instead of hand-tagging a mortgage or auto loan `--noncurrent`:
+  the schedule splits the *current portion of long-term debt* precisely, which a
+  single tag can't.
+- The balance sheet always splits the real ledger balance, so use `loan pay`
+  (or ordinary postings) to keep that balance accurate; a variable rate or extra
+  principal only makes the current/non-current *split point* approximate, never
+  the totals or the books.
 
 ---
 

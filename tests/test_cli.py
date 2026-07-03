@@ -681,6 +681,73 @@ def test_export_and_backup_cli(capsys, ledger_file, tmp_path):
     assert "Backed up ledger to" in out
 
 
+def test_account_liquidity_flags(capsys, ledger_file):
+    code, out, _ = run(capsys, ledger_file, "account", "add",
+                       "Liabilities:Mortgage", "--type", "liability",
+                       "--noncurrent")
+    assert code == 0
+    assert "noncurrent" in out
+    code, out, _ = run(capsys, ledger_file, "account", "list", "--json")
+    liq = {a["name"]: a["liquidity"] for a in json.loads(out)}
+    assert liq["Liabilities:Mortgage"] == "noncurrent"
+    assert liq["Assets:Checking"] == "current"
+    # Reclassify back to current.
+    code, _, _ = run(capsys, ledger_file, "account", "modify",
+                     "Liabilities:Mortgage", "--current")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "account", "list", "--json")
+    liq = {a["name"]: a["liquidity"] for a in json.loads(out)}
+    assert liq["Liabilities:Mortgage"] == "current"
+    # Non-current is rejected on income/expense accounts.
+    code, _, err = run(capsys, ledger_file, "account", "modify",
+                       "Salary", "--noncurrent")
+    assert code == 1
+    assert "asset and liability" in err
+
+
+def test_loan_lifecycle(capsys, ledger_file):
+    run(capsys, ledger_file, "tx", "add", "--date", "2026-01-01",
+        "--desc", "draw", "--post", "Assets:Checking", "30000",
+        "--post", "Liabilities:Loans", "-30000")
+    code, out, _ = run(capsys, ledger_file, "loan", "add", "--account",
+                       "Loans", "--principal", "30000", "--rate", "6.25",
+                       "--term", "60", "--start", "2026-01-01")
+    assert code == 0
+    assert "583.48" in out  # derived payment
+    code, out, _ = run(capsys, ledger_file, "loan", "list", "--json")
+    [row] = json.loads(out)["rows"]
+    assert row["balance"] == "30000.00"
+    # Current + non-current portions tie to the balance.
+    assert (float(row["current_portion"]) + float(row["noncurrent_portion"])
+            == 30000.0)
+    assert 0 < float(row["current_portion"]) < 30000.0
+
+    # Classified balance sheet splits the loan; --flat does not.
+    code, out, _ = run(capsys, ledger_file, "report", "balance", "--date",
+                       "2026-06-30", "--json")
+    data = json.loads(out)
+    assert "Liabilities:Loans" in data["liabilities_current"]
+    assert "Liabilities:Loans" in data["liabilities_noncurrent"]
+
+    code, out, _ = run(capsys, ledger_file, "report", "balance", "--date",
+                       "2026-06-30", "--flat")
+    assert "Current Liabilities" not in out
+
+    # Pay one instalment: principal + interest split, books stay balanced.
+    code, out, _ = run(capsys, ledger_file, "loan", "pay", "Loans",
+                       "--date", "2026-02-01", "--from", "Checking")
+    assert code == 0
+    assert "156.25 interest" in out
+    code, out, _ = run(capsys, ledger_file, "report", "trial", "--json")
+    trial = json.loads(out)
+    assert trial["total_debits"] == trial["total_credits"]
+
+    code, out, _ = run(capsys, ledger_file, "loan", "remove", "Loans")
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "loan", "list", "--json")
+    assert json.loads(out)["rows"] == []
+
+
 def test_group_command_shows_help(capsys, ledger_file):
     code = main(["-f", ledger_file, "tx"])
     out = capsys.readouterr().out
