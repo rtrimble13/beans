@@ -460,3 +460,7 @@ The codebase is small and orthogonal: `ledger.py` (SQLite double-entry core),
 `loans.py` (amortization), `importer.py`, `cli.py`. All amounts are stored as
 integers in minor units;
 postings are debit-positive/credit-negative and must sum to zero.
+
+## Bugs & feature requests
+
+Found a bug or have an idea for a new feature? Email roger@turningbull.com.
