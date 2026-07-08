@@ -35,6 +35,7 @@ shape of the tool and want the details on a specific command.
 21. [`period` — closing the books](#period--closing-the-books)
 22. [`goal` — savings and payoff goals](#goal--savings-and-payoff-goals)
 23. [`invest` / `price` — investments](#invest--price--investments)
+24. [`loan` — amortizing loans](#loan--amortizing-loans)
 24. [`currency` — multi-currency and FX](#currency--multi-currency-and-fx)
 25. [`export` / `backup` / `restore`](#export--backup--restore)
 26. [`completions` — shell completions](#completions--shell-completions)
