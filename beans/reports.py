@@ -40,7 +40,7 @@ class Money:
 # Report-dict keys whose integer values are counts, not money.
 NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   "posted_count", "number", "term_months",
-                  "payments_remaining"}
+                  "payments_remaining", "work_months", "live_months"}
 
 
 def jsonify(value, decimals: int):

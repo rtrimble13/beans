@@ -14,6 +14,7 @@ from beans import (
     analysis,
     budget,
     completions,
+    economic,
     export,
     forecast,
     fx,
@@ -39,6 +40,7 @@ from beans.utils import (
     parse_amount,
     parse_date,
     parse_fx_rate,
+    parse_percent,
     parse_period,
     signed_foreign,
 )
@@ -624,6 +626,85 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def _economic_inputs(args, led: Ledger) -> economic.EconomicInputs:
+    """Resolve economic inputs from a config document and/or flags. Precedence:
+    explicit flag > config-document field > default (or `auto` estimate)."""
+    file_doc = getattr(args, "file_doc", None)
+    if file_doc:
+        try:
+            text = Path(file_doc).read_text()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise BeansError(f"cannot read config file {file_doc!r}: {exc}")
+        inputs = economic.parse_config(text, led)
+    else:
+        rate_meta = led.get_meta("economic.discount_rate")
+        inputs = economic.EconomicInputs(
+            as_of=date.today(),
+            discount_rate=(parse_percent(rate_meta) if rate_meta
+                           else Decimal("0.03")),
+            components={
+                "income": economic.Component("income", "auto"),
+                "consumption": economic.Component("consumption", "auto"),
+            },
+        )
+    if args.rate is not None:
+        inputs.discount_rate = parse_percent(args.rate)
+    if args.work_years is not None:
+        inputs.work_years = args.work_years
+    if args.live_years is not None:
+        inputs.live_years = args.live_years
+    if args.growth is not None:
+        inputs.income_growth = parse_percent(args.growth, allow_negative=True)
+    if args.inflation is not None:
+        inputs.inflation = parse_percent(args.inflation, allow_negative=True)
+    if args.lookback is not None:
+        inputs.lookback = args.lookback
+    if args.income is not None:
+        inputs.components["income"] = economic.Component(
+            "income", "scalar", amount=parse_amount(args.income, led.decimals))
+    if args.expense is not None:
+        inputs.components["consumption"] = economic.Component(
+            "consumption", "scalar",
+            amount=parse_amount(args.expense, led.decimals))
+    for name, value in (("--work-years", inputs.work_years),
+                        ("--live-years", inputs.live_years),
+                        ("--lookback", inputs.lookback)):
+        if value < 1:
+            raise BeansError(f"{name} must be at least 1")
+    return inputs
+
+
+def cmd_economic_bs(args) -> int:
+    led = _open(args)
+    inputs = _economic_inputs(args, led)
+    data = economic.economic_balance_sheet(
+        led, inputs, use_budget=args.use_budget,
+        use_recurring=args.use_recurring)
+    _emit(args, led, data, economic.render_economic_balance_sheet)
+    return 0
+
+
+def cmd_economic_npv(args) -> int:
+    led = _open(args)
+    inputs = _economic_inputs(args, led)
+    data = economic.economic_balance_sheet(
+        led, inputs, use_budget=args.use_budget,
+        use_recurring=args.use_recurring)
+    _emit(args, led, data, economic.render_economic_npv)
+    return 0
+
+
+def cmd_economic_create_template(args) -> int:
+    led = _open(args)
+    out = Path(args.output)
+    if out.exists() and not args.force:
+        raise BeansError(f"{out} already exists — pass --force to overwrite")
+    out.write_text(economic.write_template(led))
+    print(f"Wrote economic balance sheet template to {out}")
+    print(f"Edit it, then run: beans economic bs --file {out}")
+    return 0
+
+
 def cmd_import(args) -> int:
     led = _open(args)
     account = led.find_account(args.account)
@@ -1155,6 +1236,34 @@ def _add_json_arg(parser: argparse.ArgumentParser) -> None:
                         help="output machine-readable JSON")
 
 
+def _add_economic_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--file", dest="file_doc", metavar="PATH",
+                        help="markdown config document of assumptions/streams "
+                             "(from `economic create-template`)")
+    parser.add_argument("--rate", "-r", metavar="PERCENT",
+                        help="annual discount rate percent (default: 3)")
+    parser.add_argument("--work-years", type=int, metavar="N",
+                        help="human-capital horizon in years (default: 25)")
+    parser.add_argument("--live-years", type=int, metavar="N",
+                        help="consumption horizon in years (default: 40)")
+    parser.add_argument("--growth", metavar="PERCENT",
+                        help="annual income growth percent (default: 0)")
+    parser.add_argument("--inflation", metavar="PERCENT",
+                        help="annual consumption growth percent (default: 0)")
+    parser.add_argument("--lookback", type=int, metavar="N",
+                        help="months of history for the run-rate (default: 12)")
+    parser.add_argument("--income", metavar="AMOUNT",
+                        help="override the monthly income run-rate")
+    parser.add_argument("--expense", metavar="AMOUNT",
+                        help="override the monthly consumption run-rate")
+    parser.add_argument("--use-budget", action="store_true",
+                        help="use budgeted amounts in the run-rate")
+    parser.add_argument("--use-recurring", action="store_true",
+                        help="use scheduled recurring transactions in the "
+                             "run-rate")
+    _add_json_arg(parser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -1443,6 +1552,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_period_args(p)
     _add_json_arg(p)
     p.set_defaults(func=cmd_analyze)
+
+    p_econ = sub.add_parser(
+        "economic", aliases=["ebs"],
+        help="economic balance sheet (NPV of human capital & consumption)")
+    econ_sub = p_econ.add_subparsers(dest="subcommand", metavar="subcommand")
+    p = econ_sub.add_parser("bs", help="full economic balance sheet")
+    _add_economic_args(p)
+    p.set_defaults(func=cmd_economic_bs)
+    p = econ_sub.add_parser("npv", help="just the economic net present value")
+    _add_economic_args(p)
+    p.set_defaults(func=cmd_economic_npv)
+    p = econ_sub.add_parser(
+        "create-template",
+        help="write a config template pre-filled from your ledger")
+    p.add_argument("--output", "-o", default="economic.md",
+                   help="output path (default: economic.md)")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite an existing file")
+    p.set_defaults(func=cmd_economic_create_template)
 
     p = sub.add_parser("import", help="import transactions from CSV")
     p.add_argument("csvfile")

@@ -46,6 +46,12 @@ whichever job you have in front of you.
    read a classified balance sheet with the current portion of long-term debt
    split out, and compute the current, quick, and working-capital ratios.
 
+6. **[The economic balance sheet](06-economic-balance-sheet.md)** — Look past
+   today's net worth to your lifetime net worth: value human capital (the present
+   value of future income) and future consumption, read an economic balance sheet
+   that reconciles with the accounting one, and model a retirement date, a
+   pension, and an inheritance with a markdown config document.
+
 ## Conventions used throughout
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured

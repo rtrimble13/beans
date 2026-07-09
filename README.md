@@ -402,6 +402,35 @@ current vs non-current split), liquidity runway in months of expenses,
 debt-to-assets, debt-to-annual-income, and your top expense categories as a % of
 income.
 
+## Economic balance sheet
+
+The accounting balance sheet shows what you own and owe today. The **economic
+balance sheet** adds the present value of the future: your **human capital** (the
+discounted value of income you expect to earn) as an asset, and your **future
+consumption** (the discounted value of your lifetime spending) as a liability,
+plus optional pensions, expected inheritances, and planned bequests.
+
+```sh
+beans economic bs --rate 3 --work-years 25 --live-years 40   # quick estimate
+beans economic npv                                           # just the headline
+beans economic create-template -o economic.md                # a config to edit
+beans economic bs --file economic.md                         # a detailed plan
+```
+
+Human capital and future consumption are estimated from your recent income/expense
+run-rate, projected over the horizons and discounted — or specified precisely in
+a markdown config document, where each input can be a flat amount or a dated
+cashflow stream (e.g. a salary that stops at retirement, a pension that starts
+later, a one-off inheritance). The forward-looking inputs are assumptions and are
+never posted to your ledger, so the result always reconciles with the accounting
+balance sheet:
+
+```
+economic net worth = accounting net worth
+                   + human capital + pensions/benefits
+                   - future consumption - bequests/obligations
+```
+
 ## CSV import
 
 Import bank exports with a `date`, `description`, signed `amount`
@@ -457,7 +486,8 @@ pytest
 
 The codebase is small and orthogonal: `ledger.py` (SQLite double-entry core),
 `reports.py` (statements), `budget.py`, `forecast.py`, `analysis.py`,
-`loans.py` (amortization), `importer.py`, `cli.py`. All amounts are stored as
+`loans.py` (amortization), `economic.py` (economic balance sheet / NPV),
+`importer.py`, `cli.py`. All amounts are stored as
 integers in minor units;
 postings are debit-positive/credit-negative and must sum to zero.
 
