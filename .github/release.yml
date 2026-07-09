@@ -1,0 +1,30 @@
+# Configures the auto-generated "What's Changed" notes that the Release
+# workflow attaches to each GitHub Release (via `gh release create
+# --generate-notes`). Pull requests are grouped into these categories by
+# their labels; anything unlabelled falls under "Other changes".
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - dependabot
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking
+        - breaking-change
+    - title: New features
+      labels:
+        - feature
+        - enhancement
+    - title: Bug fixes
+      labels:
+        - bug
+        - fix
+    - title: Documentation
+      labels:
+        - documentation
+        - docs
+    - title: Other changes
+      labels:
+        - "*"
