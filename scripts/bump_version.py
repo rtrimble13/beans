@@ -165,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.push:
         branch = git("rev-parse", "--abbrev-ref", "HEAD")
+        if branch == "HEAD":
+            _fail(
+                "cannot --push from a detached HEAD; check out a branch first "
+                f"(the commit and tag {tag} were created locally)"
+            )
         git("push", args.remote, branch)
         print(f"Pushed commit to {args.remote}/{branch}")
         if not args.no_tag:

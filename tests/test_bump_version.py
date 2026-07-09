@@ -1,6 +1,7 @@
 """Tests for scripts/bump_version.py — the release version bumper."""
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,87 @@ def test_no_commit_edits_without_git(tmp_path, monkeypatch, capsys):
     rc = bump_version.main(["v2.3.4", "--no-commit"])
     assert rc == 0
     assert bump_version.read_current_version() == "2.3.4"
+
+
+def _init_git_repo(root: Path) -> None:
+    def run(*args):
+        subprocess.run(["git", *args], cwd=root, check=True,
+                       capture_output=True, text=True)
+
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    run("add", ".")
+    run("commit", "-q", "-m", "initial")
+
+
+def _setup_repo(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    pkg = root / "beans"
+    pkg.mkdir(parents=True)
+    init = pkg / "__init__.py"
+    init.write_text('__version__ = "0.1.0"\n')
+    _init_git_repo(root)
+    monkeypatch.setattr(bump_version, "ROOT", root)
+    monkeypatch.setattr(bump_version, "INIT_FILE", init)
+    return root, init
+
+
+def _git_out(root, *args):
+    return subprocess.run(
+        ["git", *args], cwd=root, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_bump_commits_and_tags(tmp_path, monkeypatch):
+    root, init = _setup_repo(tmp_path, monkeypatch)
+
+    rc = bump_version.main(["v1.2.3"])
+    assert rc == 0
+
+    assert init.read_text() == '__version__ = "1.2.3"\n'
+    # A commit was made with the expected message.
+    assert _git_out(root, "log", "-1", "--pretty=%s") == "Release v1.2.3"
+    # An annotated tag v1.2.3 now exists.
+    assert _git_out(root, "tag", "--list", "v1.2.3") == "v1.2.3"
+    assert _git_out(root, "cat-file", "-t", "v1.2.3") == "tag"
+    # Working tree is clean afterwards (only the version file was committed).
+    assert _git_out(root, "status", "--porcelain") == ""
+
+
+def test_bump_no_tag_skips_tag(tmp_path, monkeypatch):
+    root, _ = _setup_repo(tmp_path, monkeypatch)
+
+    rc = bump_version.main(["v1.2.3", "--no-tag"])
+    assert rc == 0
+    assert _git_out(root, "log", "-1", "--pretty=%s") == "Release v1.2.3"
+    assert _git_out(root, "tag", "--list") == ""
+
+
+def test_bump_refuses_dirty_worktree(tmp_path, monkeypatch, capsys):
+    root, _ = _setup_repo(tmp_path, monkeypatch)
+    (root / "dirty.txt").write_text("uncommitted\n")
+
+    with pytest.raises(SystemExit) as excinfo:
+        bump_version.main(["v1.2.3"])
+    assert excinfo.value.code == 2
+    assert "not clean" in capsys.readouterr().err
+
+
+def test_bump_refuses_existing_tag(tmp_path, monkeypatch, capsys):
+    root, _ = _setup_repo(tmp_path, monkeypatch)
+    subprocess.run(["git", "tag", "v1.2.3"], cwd=root, check=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        bump_version.main(["v1.2.3"])
+    assert excinfo.value.code == 2
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_bump_refuses_noop(tmp_path, monkeypatch, capsys):
+    root, _ = _setup_repo(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        bump_version.main(["v0.1.0"])
+    assert excinfo.value.code == 2
+    assert "already" in capsys.readouterr().err

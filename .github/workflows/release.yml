@@ -52,33 +52,6 @@ jobs:
           name: dist
           path: dist/
 
-  github-release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - name: Create release with generated notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          prerelease=""
-          case "${TAG}" in
-            *a*|*b*|*rc*|*dev*) prerelease="--prerelease" ;;
-          esac
-          gh release create "${TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${TAG}" \
-            --generate-notes \
-            ${prerelease} \
-            dist/*
-
   pypi-publish:
     name: Publish to PyPI
     needs: build
@@ -96,3 +69,41 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Make re-runs safe: don't fail if this version is already on PyPI.
+          skip-existing: true
+
+  github-release:
+    name: Create GitHub Release
+    # Runs only after PyPI publishing succeeds, so a released tag always has
+    # its distributions available on PyPI.
+    needs: [build, pypi-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=""
+          case "${TAG}" in
+            *a*|*b*|*rc*|*dev*) prerelease="--prerelease" ;;
+          esac
+          # Idempotent on re-run: create the release, or upload assets if it
+          # already exists.
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber dist/*
+          else
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${TAG}" \
+              --generate-notes \
+              ${prerelease} \
+              dist/*
+          fi
