@@ -633,7 +633,7 @@ def _economic_inputs(args, led: Ledger) -> economic.EconomicInputs:
     if file_doc:
         try:
             text = Path(file_doc).read_text()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             raise BeansError(f"cannot read config file {file_doc!r}: {exc}")
         inputs = economic.parse_config(text, led)
     else:

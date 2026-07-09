@@ -790,3 +790,28 @@ def test_group_command_shows_help(capsys, ledger_file):
     out = capsys.readouterr().out
     assert code == 2
     assert "subcommand" in out
+
+
+def test_economic_bs_runs(capsys, ledger_file):
+    code, out, _ = run(capsys, ledger_file, "economic", "bs", "--rate", "3",
+                       "--income", "5000", "--expense", "3000")
+    assert code == 0
+    assert "ECONOMIC BALANCE SHEET" in out
+
+
+def test_economic_missing_file_errors_cleanly(capsys, ledger_file, tmp_path):
+    # A bad --file must surface a clean BeansError, not a traceback.
+    code, _, err = run(capsys, ledger_file, "economic", "bs",
+                       "--file", str(tmp_path / "nope.md"))
+    assert code == 1
+    assert "cannot read config file" in err
+
+
+def test_economic_create_template_and_use(capsys, ledger_file, tmp_path):
+    doc = str(tmp_path / "econ.md")
+    code, out, _ = run(capsys, ledger_file, "economic", "create-template",
+                       "-o", doc)
+    assert code == 0
+    code, out, _ = run(capsys, ledger_file, "economic", "npv", "--file", doc)
+    assert code == 0
+    assert "ECONOMIC NET PRESENT VALUE" in out
