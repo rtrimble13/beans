@@ -42,6 +42,16 @@ personal finance.
 
 ## Installation
 
+From PyPI:
+
+```sh
+pip install beans-ledger
+```
+
+The package is published on PyPI as **`beans-ledger`** (the name `beans` was
+already taken), but it still installs the `beans` command and is imported as
+`beans`. Or install from a checkout:
+
 ```sh
 pip install .
 ```
@@ -525,8 +535,8 @@ which:
 - builds the sdist and wheel and verifies the tag matches the package version,
 - creates a **GitHub Release** with an auto-generated **"What's Changed"**
   section (categorised via [`.github/release.yml`](.github/release.yml)), and
-- publishes the distributions **directly to [PyPI](https://pypi.org/project/beans/)**
-  using [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC —
+- publishes the distributions **directly to [PyPI](https://pypi.org/project/beans-ledger/)**
+  (as `beans-ledger`) using [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC —
   no API tokens stored in the repo).
 
 `scripts/bump_version.py --show` prints the current version, and

@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/beans/
+      url: https://pypi.org/project/beans-ledger/
     permissions:
       # Required for Trusted Publishing (OIDC). No PyPI API token is stored.
       id-token: write

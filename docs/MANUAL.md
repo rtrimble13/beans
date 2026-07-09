@@ -1638,8 +1638,9 @@ three stages:
    configured in [`.github/release.yml`](../.github/release.yml); adjust the
    label-to-category mapping there.
 3. **PyPI publish** — uploads the built distributions directly to
-   [PyPI](https://pypi.org/project/beans/) using **Trusted Publishing**
-   (OIDC). No API token is stored in the repository.
+   [PyPI](https://pypi.org/project/beans-ledger/) (published as
+   `beans-ledger`) using **Trusted Publishing** (OIDC). No API token is stored
+   in the repository.
 
 Because the "What's Changed" notes are built from merged PRs, the cleaner your
 PR titles and labels, the better the release notes read with no manual effort.
@@ -1647,13 +1648,17 @@ PR titles and labels, the better the release notes read with no manual effort.
 ### One-time PyPI Trusted Publishing setup
 
 Trusted Publishing lets GitHub Actions authenticate to PyPI over OIDC instead
-of a stored API token. It has to be configured once on PyPI:
+of a stored API token. It has to be configured once on PyPI. The project is
+published under the distribution name **`beans-ledger`** (the name `beans` was
+already taken on PyPI); the import package and CLI command remain `beans`.
 
-1. Sign in to [PyPI](https://pypi.org/) and either create the `beans` project
-   or open **Manage → Publishing** on the existing project. (For the very
-   first release, add a *pending* publisher instead, under your account's
-   **Publishing** settings.)
-2. Add a **GitHub Actions** trusted publisher with:
+1. Sign in to [PyPI](https://pypi.org/). Because `beans-ledger` does not exist
+   on PyPI until the first successful upload, add a **pending publisher** under
+   your account's **Publishing** settings (Account → Publishing). For
+   subsequent releases you can manage it from **Manage → Publishing** on the
+   `beans-ledger` project instead.
+2. Add a **GitHub Actions** publisher with:
+   - **PyPI Project Name**: `beans-ledger`
    - **Owner**: `rtrimble13`
    - **Repository**: `beans`
    - **Workflow name**: `release.yml`
@@ -1674,7 +1679,8 @@ automatically on every tagged release.
 4. Watch the **Release** workflow. It verifies the tag, builds, creates the
    GitHub Release with generated notes, and publishes to PyPI.
 5. Confirm the new version appears on
-   [PyPI](https://pypi.org/project/beans/) and the GitHub Release reads well.
+   [PyPI](https://pypi.org/project/beans-ledger/) and the GitHub Release reads
+   well.
 
 ---
 
