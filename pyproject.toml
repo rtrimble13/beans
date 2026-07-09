@@ -3,7 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "beans"
+# Distribution name on PyPI. The import package and CLI command are both
+# `beans`; the PyPI name is `beans-ledger` because `beans` was already taken.
+name = "beans-ledger"
 dynamic = ["version"]
 description = "Professional-grade double-entry accounting for personal finance"
 readme = "README.md"
@@ -24,6 +26,7 @@ beans = "beans.cli:main"
 Homepage = "https://github.com/rtrimble13/beans"
 Repository = "https://github.com/rtrimble13/beans"
 Issues = "https://github.com/rtrimble13/beans/issues"
+PyPI = "https://pypi.org/project/beans-ledger/"
 
 [project.optional-dependencies]
 dev = ["pytest"]
