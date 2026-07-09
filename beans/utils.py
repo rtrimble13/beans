@@ -48,6 +48,20 @@ def parse_fx_rate(text: str) -> Decimal:
     return rate
 
 
+def parse_percent(text: str, allow_negative: bool = False) -> Decimal:
+    """Parse a percentage (e.g. '6.25' or '6.25%') into a Decimal fraction
+    (0.0625). Negatives are rejected unless `allow_negative` (growth and
+    inflation may legitimately be negative; discount and interest rates may
+    not)."""
+    try:
+        pct = Decimal(str(text).strip().rstrip("%"))
+    except InvalidOperation:
+        raise BeansError(f"invalid percentage: {text!r}")
+    if pct < 0 and not allow_negative:
+        raise BeansError("percentage cannot be negative")
+    return pct / Decimal(100)
+
+
 def foreign_from_base(base_minor: int, rate: Decimal,
                       base_decimals: int, foreign_decimals: int) -> int:
     """Convert base minor units to foreign minor units at rate

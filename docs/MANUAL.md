@@ -25,7 +25,8 @@ shape of the tool and want the details on a specific command.
 11. [`budget` — budgets and variance](#budget--budgets-and-variance)
 12. [`forecast` — projections](#forecast--projections)
 13. [`analyze` — ratios and analysis](#analyze--ratios-and-analysis)
-14. [`import` — CSV import](#import--csv-import)
+14. [`economic` — economic balance sheet](#economic--economic-balance-sheet)
+15. [`import` — CSV import](#import--csv-import)
 15. [`rule` — auto-categorization rules](#rule--auto-categorization-rules)
 16. [`config` — ledger configuration](#config--ledger-configuration)
 17. [`status` — dashboard](#status--dashboard)
@@ -787,6 +788,102 @@ sharpen as you tag long-term accounts and attach loans.
 - Compare `analyze` across `--period` values (e.g. this quarter vs. last
   quarter) to see whether your savings rate and runway are improving or
   eroding, not just their current absolute value.
+
+---
+
+## `economic` — economic balance sheet
+
+The accounting balance sheet (`report balance`) shows what you own and owe
+*today*. The **economic balance sheet** extends it with the present value of the
+*future*: your **human capital** (the discounted value of the income you expect
+to earn) as an asset, and your **future consumption** (the discounted value of
+your lifetime spending) as a liability, alongside optional pensions, expected
+inheritances, and planned bequests.
+
+```
+beans economic bs   [--file DOC] [assumptions] [--json]
+beans economic npv  [--file DOC] [assumptions] [--json]
+beans economic create-template [--output PATH] [--force]
+```
+
+`bs` renders the full statement; `npv` renders just the headline economic net
+worth and the components behind it. Both compute the same thing.
+
+By construction the result reconciles with the accounting balance sheet:
+
+```
+economic net worth = accounting net worth
+                   + human capital + pensions/benefits
+                   - future consumption - bequests/obligations
+```
+
+The financial-capital side always comes from your ledger (it is your actual
+position). The forward-looking parts are **assumptions** — they are never posted
+to your books. Supply them with flags for a quick estimate, or with a config
+document (`--file`) for a detailed, versionable plan.
+
+### Assumption flags (for `bs` and `npv`)
+
+| Flag | Description |
+|---|---|
+| `-r, --rate PERCENT` | Annual discount rate. Default: `3` (or the `economic.discount_rate` config value). |
+| `--work-years N` | Human-capital horizon — years of future income to value. Default: 25. |
+| `--live-years N` | Consumption horizon — years of future spending to value. Default: 40. |
+| `--growth PERCENT` | Annual growth of future income. Default: 0. May be negative. |
+| `--inflation PERCENT` | Annual growth of future consumption. Default: 0. May be negative. |
+| `--lookback N` | Months of history used to estimate the income/expense run-rate. Default: 12. |
+| `--income AMOUNT` | Override the estimated monthly income run-rate. |
+| `--expense AMOUNT` | Override the estimated monthly consumption run-rate. |
+| `--use-budget` | Fold budgets into the run-rate estimate (as in `forecast`). |
+| `--use-recurring` | Fold scheduled recurring transactions into the run-rate estimate. |
+| `--file PATH` | Read assumptions and cashflow streams from a config document (below). |
+| `--json` | Machine-readable output. |
+
+Without a `--file`, human capital and future consumption are estimated from your
+recent income and expense **run-rate** (the same engine `forecast` uses),
+projected over the horizons and discounted. A higher discount rate reflects a
+riskier income stream and lowers human capital.
+
+### `create-template` — the config document
+
+```
+beans economic create-template -o economic.md
+```
+
+Writes a self-documenting markdown file, pre-filled with your current
+run-rates. Edit it, then feed it to `bs`/`npv` with `--file`. Keep several files
+for scenarios (`base.md`, `optimistic.md`, …) — the document is the audit trail
+of your assumptions, and it never touches your ledger.
+
+The document has a `## Settings` table (discount rate, horizons, growth,
+inflation, `as_of`) and one section per line of the statement — **Human
+capital**, **Future consumption**, **Pension / benefits**, **Expected
+inheritance**, **Bequests / obligations**. Each section has a `Mode:` line:
+
+| Mode | Meaning |
+|---|---|
+| `auto` | Estimate the line from your ledger run-rate (income and consumption only). |
+| `scalar` | A flat/growing monthly amount over a horizon — one `Amount / Growth / Years` row. |
+| `stream` | A piecewise-constant schedule — a table of `From-date / Amount / Growth` rows, where each value prevails until the next date. A `Date / Amount` table instead models one-off lump sums (an inheritance received, tuition paid). |
+| `none` | Exclude the line. |
+
+**Precedence:** an explicit CLI flag overrides the document field, which
+overrides the `auto` estimate.
+
+### Best practices
+
+- Start with `beans economic bs` (no file) for a one-line-of-thought estimate,
+  then graduate to `create-template` when you want to model a real retirement
+  date, a pension, or a future tuition bill.
+- Use a `stream` with a retirement row of `0` to stop human capital at the age
+  you plan to stop working — that is more honest than a flat annuity that runs
+  income to the horizon.
+- Raise `--rate` for a volatile or commission-based income and lower it for a
+  tenured or government salary; the discount rate is where income risk enters
+  the analysis.
+- Keep separate config files for scenarios and diff them — the economic net
+  worth delta between `base.md` and `retire-early.md` is exactly the cost of the
+  decision in today's dollars.
 
 ---
 
