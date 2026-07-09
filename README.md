@@ -94,6 +94,9 @@ captured output:
 5. [Loans & liquidity](docs/vignettes/05-loans-and-liquidity.md) — classify
    current vs non-current, finance a loan, and read a classified balance sheet
    with liquidity ratios.
+6. [The economic balance sheet](docs/vignettes/06-economic-balance-sheet.md) —
+   value human capital and future consumption to see lifetime net worth
+   alongside the accounting balance sheet.
 
 The rest of this README is the command reference. For the full instruction
 manual — every command, every flag, with parameter tables and best practices
@@ -509,7 +512,7 @@ beans --version
 
 ```sh
 # 1. Bump the version, commit, and create an annotated vX.X.X tag.
-python scripts/bump_version.py v1.2.3
+scripts/bump_version.py v1.2.3
 
 # 2. Push the commit and the tag. Pushing the tag is what triggers publishing.
 git push origin HEAD
@@ -526,7 +529,7 @@ which:
   using [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC —
   no API tokens stored in the repo).
 
-`python scripts/bump_version.py --show` prints the current version, and
+`scripts/bump_version.py --show` prints the current version, and
 `--push` will push the commit and tag for you in one step.
 
 ## Bugs & feature requests

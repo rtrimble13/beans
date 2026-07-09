@@ -1592,15 +1592,18 @@ the number without it is what gets written into `__version__`. A PEP 440
 pre-release suffix is accepted for release candidates and betas
 (`v1.2.3rc1`, `v2.0.0b1`, `v1.5.0.dev1`).
 
+The script is executable (`chmod +x`, `#!/usr/bin/env python3` shebang), so it
+can be run directly or via `python`:
+
 ```sh
 # Show the current version.
-python scripts/bump_version.py --show          # -> v0.1.0
+scripts/bump_version.py --show          # -> v0.1.0
 
 # Bump: rewrite __version__, commit "Release v1.2.3", create tag v1.2.3.
-python scripts/bump_version.py v1.2.3
+scripts/bump_version.py v1.2.3
 
 # Bump and push the commit + tag in one step (pushing the tag publishes).
-python scripts/bump_version.py v1.2.3 --push
+scripts/bump_version.py v1.2.3 --push
 ```
 
 Useful flags:
@@ -1666,7 +1669,7 @@ automatically on every tagged release.
 ### Release checklist
 
 1. Make sure `main` is green and everything you want in the release is merged.
-2. `python scripts/bump_version.py vX.X.X` (add `--push`, or push manually).
+2. `scripts/bump_version.py vX.X.X` (add `--push`, or push manually).
 3. If you didn't use `--push`: `git push origin HEAD && git push origin vX.X.X`.
 4. Watch the **Release** workflow. It verifies the tag, builds, creates the
    GitHub Release with generated notes, and publishes to PyPI.
