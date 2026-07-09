@@ -106,7 +106,8 @@ def test_reconciles_with_accounting_balance_sheet(led):
                                                         24)
     assert data["future_consumption"] == economic.pv_annuity(
         150000, Decimal("0.03"), 36)
-    assert data["reconciles"]
+    # The economic net worth is the accounting net worth plus/minus the forward
+    # PVs — a structural guard against a component landing in the wrong bucket.
     assert data["economic_net_worth"] == (
         data["accounting_net_worth"] + data["human_capital"]
         + data["other_benefits"] - data["future_consumption"]
@@ -232,4 +233,82 @@ def test_config_non_ascending_stream_dates_error(led):
 def test_config_negative_horizon_errors(led):
     text = "## Settings\n| discount_rate | 3% |\n| work_years | 0 |\n"
     with pytest.raises(BeansError, match="work_years"):
+        economic.parse_config(text, led)
+
+
+# -- regression tests for review findings ------------------------------------
+
+
+def test_pv_stream_grows_a_segment_started_before_as_of():
+    # A raise that began before today must be valued from today's grown level,
+    # not the stale original amount.
+    as_of = date(2026, 1, 1)
+    rate, growth = Decimal("0.04"), Decimal("0.03")
+    seg = [Segment(date(2020, 1, 1), 500000, growth)]  # started 72 months ago
+    horizon = add_months(as_of, 240)
+    got = economic.pv_stream(seg, as_of, rate, horizon)
+    # Base grown from 2020 to as_of (72 months), then a 240-month annuity — the
+    # same Decimal path the implementation takes (round once at the end).
+    r_m, g_m = periodic_rate(rate), periodic_rate(growth)
+    grown_base = Decimal(500000) * (1 + g_m) ** 72
+    expected = economic._round_minor(economic._annuity_pv(grown_base, r_m, g_m,
+                                                          240))
+    assert got == expected
+    # And it is far above the buggy figure that ignored the pre-as_of growth.
+    assert got > economic.pv_annuity(500000, rate, 240, growth)
+
+
+def test_stream_and_scalar_agree_when_as_of_not_first_of_month():
+    # The horizon must be exactly `work_years` payments long regardless of the
+    # day-of-month of as_of, so scalar and an equivalent single-segment stream
+    # match. This exercises the compute path (via _component_pv), not pv_stream
+    # directly, so the add_months_clamped horizon is under test.
+    as_of = date(2026, 7, 9)
+    rate = Decimal("0.03")
+    scalar = EconomicInputs(
+        as_of=as_of, discount_rate=rate, work_years=25,
+        components={"income": Component("income", "scalar", amount=900000,
+                                        growth=Decimal("0.01"))})
+    stream = EconomicInputs(
+        as_of=as_of, discount_rate=rate, work_years=25,
+        components={"income": Component(
+            "income", "stream",
+            segments=[Segment(as_of, 900000, Decimal("0.01"))])})
+
+    class _EmptyLed:
+        def position(self, as_of=None):
+            return {"assets": 0, "liabilities": 0, "cash": 0, "net_worth": 0}
+
+    led = _EmptyLed()
+    a = economic.economic_balance_sheet(led, scalar)["human_capital"]
+    b = economic.economic_balance_sheet(led, stream)["human_capital"]
+    assert a == b
+
+
+def test_pv_flows_excludes_past_dated_flows():
+    as_of = date(2026, 1, 1)
+    # A flow before as_of is already realized and must not inflate the PV.
+    assert economic.pv_flows([(date(2020, 1, 1), 100000)], as_of,
+                             Decimal("0.03")) == 0
+    # A flow on as_of counts at full value; one in the future is discounted.
+    assert economic.pv_flows([(as_of, 100000)], as_of, Decimal("0.03")) == 100000
+
+
+def test_config_date_growth_header_is_a_stream_not_lump_sums(led):
+    # A monthly schedule written with a `Date` header (plus Growth) must parse
+    # as segments, not one-off flows.
+    text = ("## Settings\n| discount_rate | 3% |\n| as_of | 2026-01-01 |\n\n"
+            "## Pension / benefits\nMode: stream\n"
+            "| Date | Amount (monthly) | Growth |\n|---|---|---|\n"
+            "| 2027-01-01 | 1,000 | 0% |\n| 2030-01-01 | 2,000 | 0% |\n")
+    comp = economic.parse_config(text, led).components["pension"]
+    assert len(comp.segments) == 2
+    assert comp.flows == []
+    assert comp.segments[0].amount == 100000
+
+
+def test_config_auto_rejected_for_non_runrate_kind(led):
+    text = ("## Settings\n| discount_rate | 3% |\n\n"
+            "## Pension / benefits\nMode: auto\n")
+    with pytest.raises(BeansError, match="auto"):
         economic.parse_config(text, led)

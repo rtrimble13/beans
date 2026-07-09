@@ -45,6 +45,7 @@ from beans.render import Table, bold, green, money, red
 from beans.utils import (
     BeansError,
     add_months,
+    add_months_clamped,
     format_amount,
     parse_amount,
     parse_date,
@@ -68,6 +69,10 @@ _COMPONENTS: dict[str, _Spec] = {
     "other": _Spec("Other Obligations", "liability", "live_years", None),
 }
 COMPONENT_MODES = ("auto", "scalar", "stream", "none")
+
+# Only these kinds can be estimated from the ledger, so `auto` is valid only
+# for them; the rest have nothing in the books to project from.
+_RUN_RATE_KINDS = ("income", "consumption")
 
 
 # -- input model (transient; never persisted to the ledger) ------------------
@@ -124,7 +129,7 @@ def discount_factor(r: Decimal, n: int) -> Decimal:
     return (Decimal(1) + r) ** -n
 
 
-def _annuity_pv(cash: int, r: Decimal, g: Decimal, n: int) -> Decimal:
+def _annuity_pv(cash: int | Decimal, r: Decimal, g: Decimal, n: int) -> Decimal:
     """PV (as of one period before the first payment) of an ordinary annuity of
     `cash` per period for `n` periods, growing at periodic rate `g`, discounted
     at periodic rate `r`. Returns an unrounded Decimal so callers can sum
@@ -159,11 +164,15 @@ def pv_lump_sum(amount: int, annual_rate: Decimal, months: int) -> int:
 
 def pv_flows(flows: list[tuple[date, int]], as_of: date,
              annual_rate: Decimal) -> int:
-    """PV in minor units of explicit one-off dated flows. Summed on the Decimal
-    before a single rounding, so many small flows don't accumulate drift."""
+    """PV in minor units of explicit one-off dated flows. Flows dated before
+    `as_of` are already realized (booked to the ledger) and excluded; the rest
+    are summed on the Decimal before a single rounding so many small flows don't
+    accumulate drift."""
     r = periodic_rate(annual_rate)
     total = Decimal(0)
     for when, amount in flows:
+        if when < as_of:
+            continue
         total += Decimal(amount) * discount_factor(r, _months_between(as_of,
                                                                       when))
     return _round_minor(total)
@@ -179,13 +188,19 @@ def pv_stream(segments: list[Segment], as_of: date, annual_rate: Decimal,
     ordered = sorted(segments, key=lambda s: s.from_date)
     total = Decimal(0)
     for i, seg in enumerate(ordered):
-        seg_start = max(seg.from_date, as_of)  # clamp flows already begun
+        g = periodic_rate(seg.growth)
+        seg_start = max(seg.from_date, as_of)  # clamp a segment already begun
         seg_end = ordered[i + 1].from_date if i + 1 < len(ordered) \
             else horizon_end
         n = _months_between(seg_start, seg_end)
         if n <= 0:
             continue
-        at_start = _annuity_pv(seg.amount, r, periodic_rate(seg.growth), n)
+        # If the segment began before as_of, its amount has already grown from
+        # from_date to as_of; grow the base so the remaining annuity starts from
+        # today's level rather than the (stale) original level.
+        base = (Decimal(seg.amount)
+                * (Decimal(1) + g) ** _months_between(seg.from_date, seg_start))
+        at_start = _annuity_pv(base, r, g, n)
         total += at_start * discount_factor(r, _months_between(as_of, seg_start))
     return _round_minor(total)
 
@@ -237,7 +252,10 @@ def _component_pv(inputs: EconomicInputs, comp: Component,
         pv = pv_annuity(comp.amount or 0, inputs.discount_rate, horizon_months,
                         growth)
     elif comp.mode == "stream":
-        horizon_end = add_months(inputs.as_of, horizon_months)
+        # add_months_clamped keeps as_of's day-of-month, so the horizon is
+        # exactly `horizon_months` payments long — matching the scalar path
+        # (plain add_months would snap to the 1st and lose up to a month).
+        horizon_end = add_months_clamped(inputs.as_of, horizon_months)
         pv = pv_stream(comp.segments, inputs.as_of, inputs.discount_rate,
                        horizon_end)
     else:
@@ -285,9 +303,6 @@ def economic_balance_sheet(led: Ledger, inputs: EconomicInputs,
     total_liabilities = (financial_liabilities + future_consumption
                          + other_obligations)
     economic_net_worth = total_assets - total_liabilities
-    reconciles = economic_net_worth == (
-        accounting_net_worth + human_capital + other_benefits
-        - future_consumption - other_obligations)
 
     return {
         "report": "economic_balance_sheet",
@@ -298,8 +313,14 @@ def economic_balance_sheet(led: Ledger, inputs: EconomicInputs,
         "work_months": inputs.work_years * 12,
         "live_months": inputs.live_years * 12,
         "lookback_months": inputs.lookback,
-        "monthly_income_runrate": run_rates.get("income", 0),
-        "monthly_expense_runrate": run_rates.get("consumption", 0),
+        # The monthly figure actually used to value each line (the override or
+        # scalar amount when given, else the ledger run-rate), not just the
+        # ledger estimate.
+        "monthly_income_basis": _monthly_basis(
+            inputs.components.get("income"), run_rates.get("income", 0)),
+        "monthly_expense_basis": _monthly_basis(
+            inputs.components.get("consumption"),
+            run_rates.get("consumption", 0)),
         "assets": assets,
         "liabilities": liabilities,
         "financial_capital": financial_capital,
@@ -312,8 +333,20 @@ def economic_balance_sheet(led: Ledger, inputs: EconomicInputs,
         "total_economic_liabilities": total_liabilities,
         "accounting_net_worth": accounting_net_worth,
         "economic_net_worth": economic_net_worth,
-        "reconciles": reconciles,
     }
+
+
+def _monthly_basis(comp: Component | None, run_rate: int) -> int:
+    """The single monthly figure a line was valued from, for the report header:
+    the scalar amount, the ledger run-rate for `auto`, else 0 (a `stream` has no
+    single monthly figure)."""
+    if comp is None:
+        return 0
+    if comp.mode == "scalar":
+        return comp.amount or 0
+    if comp.mode == "auto":
+        return run_rate
+    return 0
 
 
 def _basis_line(data: dict) -> str:
@@ -353,9 +386,6 @@ def render_economic_balance_sheet(data: dict, decimals: int,
     table.add("Accounting Net Worth",
               money(data["accounting_net_worth"], decimals, symbol))
     lines.append(table.render())
-    if not data["reconciles"]:
-        lines.append("WARNING: economic net worth does not reconcile with the "
-                     "accounting balance sheet")
     return "\n".join(lines)
 
 
@@ -598,6 +628,11 @@ def _parse_component(kind: str, heading: str, body: list[str],
         raise BeansError(
             f"invalid mode {mode!r} for {heading!r} "
             f"(expected {', '.join(COMPONENT_MODES)})")
+    if mode == "auto" and kind not in _RUN_RATE_KINDS:
+        raise BeansError(
+            f"component {heading!r}: mode 'auto' is only available for income "
+            "and consumption (nothing in the ledger estimates this line) — "
+            "use scalar, stream, or none")
     comp = Component(kind=kind, mode=mode)
     if mode in ("auto", "none"):
         return comp
@@ -624,15 +659,17 @@ def _parse_component(kind: str, heading: str, body: list[str],
             comp.years = _parse_int(_cell(row, yi), f"{heading} years")
         return comp
 
-    # mode == "stream": segments (has a 'From' column) or one-off dated flows
-    # (a 'Date' column).
+    # mode == "stream": a piecewise monthly schedule has a start-date column
+    # ("From", or "Date" alongside a Growth column signalling monthly amounts);
+    # a bare Date/Amount table (no growth) is one-off dated lump sums.
     fi, di, gi = _col(header, "from"), _col(header, "date"), _col(header,
                                                                   "growth")
-    if fi is not None:
+    start_i = fi if fi is not None else (di if gi is not None else None)
+    if start_i is not None:
         for row in rows:
             growth = (parse_percent(_cell(row, gi), allow_negative=True)
                       if _cell(row, gi) else Decimal(0))
-            comp.segments.append(Segment(parse_date(_cell(row, fi)),
+            comp.segments.append(Segment(parse_date(_cell(row, start_i)),
                                          parse_amount(_cell(row, ai), decimals),
                                          growth))
         for earlier, later in zip(comp.segments, comp.segments[1:]):
