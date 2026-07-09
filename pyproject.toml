@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beans"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Professional-grade double-entry accounting for personal finance"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,8 +20,17 @@ classifiers = [
 [project.scripts]
 beans = "beans.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/rtrimble13/beans"
+Repository = "https://github.com/rtrimble13/beans"
+Issues = "https://github.com/rtrimble13/beans/issues"
+
 [project.optional-dependencies]
 dev = ["pytest"]
+release = ["build", "twine"]
+
+[tool.setuptools.dynamic]
+version = { attr = "beans.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["beans*"]

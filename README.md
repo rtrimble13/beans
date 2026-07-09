@@ -491,6 +491,44 @@ The codebase is small and orthogonal: `ledger.py` (SQLite double-entry core),
 integers in minor units;
 postings are debit-positive/credit-negative and must sum to zero.
 
+## Versioning & releases
+
+`beans` uses [semantic versioning](https://semver.org/) with `vX.X.X` tags.
+The version lives in a single place — `beans/__init__.py` — and
+`pyproject.toml` reads it dynamically, so there's nothing to keep in sync by
+hand.
+
+Check the installed version any time:
+
+```sh
+beans --version
+```
+
+**Cutting a release** is a two-step, tag-driven flow (see the
+[manual](docs/MANUAL.md#releasing--publishing) for full detail):
+
+```sh
+# 1. Bump the version, commit, and create an annotated vX.X.X tag.
+python scripts/bump_version.py v1.2.3
+
+# 2. Push the commit and the tag. Pushing the tag is what triggers publishing.
+git push origin HEAD
+git push origin v1.2.3
+```
+
+Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml),
+which:
+
+- builds the sdist and wheel and verifies the tag matches the package version,
+- creates a **GitHub Release** with an auto-generated **"What's Changed"**
+  section (categorised via [`.github/release.yml`](.github/release.yml)), and
+- publishes the distributions **directly to [PyPI](https://pypi.org/project/beans/)**
+  using [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC —
+  no API tokens stored in the repo).
+
+`python scripts/bump_version.py --show` prints the current version, and
+`--push` will push the commit and tag for you in one step.
+
 ## Bugs & feature requests
 
 Found a bug or have an idea for a new feature? Email roger@turningbull.com.

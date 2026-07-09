@@ -40,7 +40,8 @@ shape of the tool and want the details on a specific command.
 24. [`currency` — multi-currency and FX](#currency--multi-currency-and-fx)
 25. [`export` / `backup` / `restore`](#export--backup--restore)
 26. [`completions` — shell completions](#completions--shell-completions)
-27. [General best practices](#general-best-practices)
+27. [Releasing & publishing](#releasing--publishing)
+28. [General best practices](#general-best-practices)
 
 ---
 
@@ -1558,6 +1559,119 @@ beans completions zsh  > ~/.zfunc/_beans    # with fpath+=(~/.zfunc)
 - Regenerate/re-source completions after a `beans` upgrade that adds new
   commands, since the script is generated from the installed version's
   command set.
+
+---
+
+## Releasing & publishing
+
+This section is for maintainers cutting a new release. Day-to-day users only
+ever need `beans --version` to see what they're running.
+
+### The version is single-sourced
+
+The version number lives in exactly one place — the `__version__` string in
+`beans/__init__.py`. `pyproject.toml` declares the version as `dynamic` and
+reads it from that attribute, so the build, the installed package, and
+`beans --version` always agree. Never edit the version by hand in two places;
+use the bump script.
+
+### `beans --version`
+
+```sh
+beans --version
+```
+
+Prints `beans X.X.X`. This is the same string the release workflow checks the
+git tag against before it will publish, so a mismatch fails the build loudly
+rather than shipping a mislabelled artifact.
+
+### Bumping the version — `scripts/bump_version.py`
+
+Versions are given in `vX.X.X` form. The leading `v` is used for the git tag;
+the number without it is what gets written into `__version__`. A PEP 440
+pre-release suffix is accepted for release candidates and betas
+(`v1.2.3rc1`, `v2.0.0b1`, `v1.5.0.dev1`).
+
+```sh
+# Show the current version.
+python scripts/bump_version.py --show          # -> v0.1.0
+
+# Bump: rewrite __version__, commit "Release v1.2.3", create tag v1.2.3.
+python scripts/bump_version.py v1.2.3
+
+# Bump and push the commit + tag in one step (pushing the tag publishes).
+python scripts/bump_version.py v1.2.3 --push
+```
+
+Useful flags:
+
+- `--show` — print the current version and exit; makes no changes.
+- `--no-commit` — rewrite `beans/__init__.py` only; skip the commit and tag
+  (handy for scripted edits or if you want to review the diff first).
+- `--no-tag` — commit the bump but don't create the tag.
+- `--push` — after committing/tagging, push the current branch and the tag to
+  the remote (`--remote`, default `origin`).
+
+Safety checks: the script refuses to run on a dirty working tree (unless
+`--no-commit`), refuses to reuse an existing tag, and refuses a no-op bump to
+the version you're already on.
+
+### What a tag push triggers
+
+Publishing is entirely tag-driven. Pushing a tag matching `vX.X.X` (including
+`rc`/`a`/`b` pre-release suffixes) runs
+[`.github/workflows/release.yml`](../.github/workflows/release.yml), which has
+three stages:
+
+1. **Build** — checks out the repo, verifies the tag matches
+   `beans.__version__` (failing the release if they differ), builds the sdist
+   and wheel with `python -m build`, and runs `twine check` on them.
+2. **GitHub Release** — creates a Release for the tag with
+   `gh release create --generate-notes`. The **"What's Changed"** section is
+   generated automatically from the pull requests merged since the previous
+   tag, grouped into categories (breaking changes, new features, bug fixes,
+   documentation, other) by their labels. Pre-release tags
+   (`rc`/`a`/`b`/`dev`) are marked as pre-releases. The categorisation is
+   configured in [`.github/release.yml`](../.github/release.yml); adjust the
+   label-to-category mapping there.
+3. **PyPI publish** — uploads the built distributions directly to
+   [PyPI](https://pypi.org/project/beans/) using **Trusted Publishing**
+   (OIDC). No API token is stored in the repository.
+
+Because the "What's Changed" notes are built from merged PRs, the cleaner your
+PR titles and labels, the better the release notes read with no manual effort.
+
+### One-time PyPI Trusted Publishing setup
+
+Trusted Publishing lets GitHub Actions authenticate to PyPI over OIDC instead
+of a stored API token. It has to be configured once on PyPI:
+
+1. Sign in to [PyPI](https://pypi.org/) and either create the `beans` project
+   or open **Manage → Publishing** on the existing project. (For the very
+   first release, add a *pending* publisher instead, under your account's
+   **Publishing** settings.)
+2. Add a **GitHub Actions** trusted publisher with:
+   - **Owner**: `rtrimble13`
+   - **Repository**: `beans`
+   - **Workflow name**: `release.yml`
+   - **Environment**: `pypi`
+3. In the GitHub repo, create an **Environment** named `pypi` (Settings →
+   Environments). Optionally add required reviewers so a human approves each
+   publish. The workflow's `pypi-publish` job already targets this environment
+   and requests the `id-token: write` permission it needs.
+
+Once configured, no secrets are needed — the `pypi-publish` job authenticates
+automatically on every tagged release.
+
+### Release checklist
+
+1. Make sure `main` is green and everything you want in the release is merged.
+2. `python scripts/bump_version.py vX.X.X` (add `--push`, or push manually).
+3. If you didn't use `--push`: `git push origin HEAD && git push origin vX.X.X`.
+4. Watch the **Release** workflow. It verifies the tag, builds, creates the
+   GitHub Release with generated notes, and publishes to PyPI.
+5. Confirm the new version appears on
+   [PyPI](https://pypi.org/project/beans/) and the GitHub Release reads well.
 
 ---
 
