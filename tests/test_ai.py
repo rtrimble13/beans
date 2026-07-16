@@ -15,9 +15,10 @@ import pytest
 from beans import cli
 from beans.ai import config as ai_config
 from beans.ai import ask as ai_ask
-from beans.ai import redaction, review as ai_review
+from beans.ai import review as ai_review
 from beans.ai.client import Response, ToolCall
-from beans.ai.runner import Runner
+from beans._toolcore import redaction
+from beans._toolcore.runner import Runner
 from beans.ledger import Ledger
 from beans.models import Posting
 
@@ -192,6 +193,20 @@ def test_ask_survives_malformed_then_recovers(ledger):
     # The model saw the invalid-arguments error for the first call.
     assert any("invalid arguments" in m.get("content", "")
                for m in client.calls[1] if m["role"] == "tool")
+
+
+def test_runner_survives_argparse_exit(ledger):
+    # argparse raises SystemExit on a parse error (a query that looks like an
+    # option, a non-int limit, an out-of-choices value). The runner must
+    # convert that to an error, not let it tear down the caller.
+    for name, args in [
+        ("search", {"query": "-tax-"}),
+        ("list_transactions", {"limit": "not-an-int"}),
+        ("get_forecast", {"method": "bogus"}),
+    ]:
+        result = Runner(ledger).run(name, args)
+        assert not result.ok
+        assert result.error
 
 
 def test_search_tool_roundtrip(ledger):

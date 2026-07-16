@@ -1349,6 +1349,27 @@ def cmd_ai_review(args) -> int:
                                 structured=args.json)
 
 
+# -- mcp (optional MCP server) -----------------------------------------------
+#
+# `beans mcp` exposes the ledger to MCP hosts (Claude Desktop / Claude Code).
+# Like `ai`, everything is imported lazily so the base tool never pays for it.
+# The server itself is normally launched via the `beans-mcp` console script
+# (a stable path for the wsl.exe invocation); `beans mcp run` is the same
+# server for convenience, and `beans mcp doctor` diagnoses the WSL setup.
+
+
+def cmd_mcp_run(args) -> int:
+    from beans.mcp.__main__ import run_server
+    return run_server(file=getattr(args, "file", None),
+                      allow_writes=args.allow_writes,
+                      log_level=args.log_level)
+
+
+def cmd_mcp_doctor(args) -> int:
+    from beans.mcp.doctor import run_doctor
+    return run_doctor(file=getattr(args, "file", None))
+
+
 # -- argument parsing --------------------------------------------------------
 
 
@@ -1973,8 +1994,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_completions)
 
     _add_ai_parser(sub)
+    _add_mcp_parser(sub)
 
     return parser
+
+
+def _add_mcp_parser(sub) -> None:
+    p_mcp = sub.add_parser(
+        "mcp", help="MCP server for Claude Desktop / Claude Code (read-only)")
+    mcp_sub = p_mcp.add_subparsers(dest="subcommand", metavar="subcommand")
+
+    p = mcp_sub.add_parser(
+        "run", help="run the stdio MCP server (same as the beans-mcp script)",
+        epilog="Prefer the `beans-mcp` console script in host configs — it "
+               "gives a stable absolute path for the wsl.exe invocation.")
+    p.add_argument("--allow-writes", action="store_true",
+                   help="enable mutating tools (default: off); the host still "
+                        "approves each call")
+    p.add_argument("--log-level", default="warning",
+                   choices=["debug", "info", "warning", "error"],
+                   help="stderr log verbosity (default: warning)")
+    p.set_defaults(func=cmd_mcp_run)
+
+    p = mcp_sub.add_parser(
+        "doctor",
+        help="diagnose the MCP/WSL setup (entry point, ledger, stdout)")
+    p.set_defaults(func=cmd_mcp_doctor)
 
 
 def _add_ai_group_flags(parser: argparse.ArgumentParser) -> None:

@@ -41,8 +41,9 @@ shape of the tool and want the details on a specific command.
 25. [`export` / `backup` / `restore`](#export--backup--restore)
 26. [`completions` — shell completions](#completions--shell-completions)
 27. [`ai` — AI assistant (optional)](#ai--ai-assistant-optional)
-28. [Releasing & publishing](#releasing--publishing)
-29. [General best practices](#general-best-practices)
+28. [`mcp` — MCP server (optional)](#mcp--mcp-server-optional)
+29. [Releasing & publishing](#releasing--publishing)
+30. [General best practices](#general-best-practices)
 
 ---
 
@@ -1721,6 +1722,90 @@ beans ai config set ai.model llama3.1
   leave your machine; the feature is provider-agnostic.
 - Keep `ask` read-only for exploration; add `--allow-writes` only when you
   intend to record something, and read each confirmation prompt.
+
+---
+
+## `mcp` — MCP server (optional)
+
+`beans mcp` runs an **opt-in** MCP (Model Context Protocol) server that exposes
+your ledger as read-only tools and a `review` prompt, so hosts like **Claude
+Desktop** and **Claude Code** can drive `beans` directly. The host owns the
+model; `beans` only answers tool calls. There is no API key and no embedded
+LLM here — that is the separate `[ai]` feature.
+
+Like `[ai]`, the `[mcp]` extra adds **no** third-party dependency: the JSON-RPC
+stdio transport is hand-rolled on the standard library.
+
+```sh
+pip install "beans-ledger[mcp]"
+```
+
+This installs a stable console script, **`beans-mcp`**, which is the server
+entry point host configs should target (a fixed absolute path, launched with no
+shell). `beans mcp run` is the same server for convenience.
+
+For the full WSL/Windows setup — the `claude_desktop_config.json` block, the
+`claude mcp add` command, and a troubleshooting table — see
+[`docs/mcp-setup-wsl.md`](mcp-setup-wsl.md).
+
+### `beans-mcp` / `beans mcp run` — the server
+
+Runs the stdio server (newline-delimited JSON-RPC 2.0) against one ledger. All
+logging goes to **stderr**; stdout carries only protocol frames.
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--file PATH`, `-f` | Ledger file — a **Linux** path. Rejected if under `/mnt/` (SQLite over the Windows mount is slow/unreliable). Falls back to `$BEANS_LEDGER`, then `~/.beans/ledger.db`. | — |
+| `--allow-writes` | Enable mutating tools (record expense/income/transfer). The host still approves every call. | off |
+| `--read-only` | Explicit read-only (the default; for clarity in configs). | on |
+| `--log-level LEVEL` | stderr verbosity: `debug`/`info`/`warning`/`error`. | `warning` |
+
+### `beans mcp doctor` — setup self-check
+
+Run inside WSL. Turns opaque "server disconnected" failures into specific,
+fixable messages. It:
+
+1. resolves and prints the absolute `beans-mcp` path;
+2. checks the ledger is readable and **not** under `/mnt/`;
+3. **starts the server** and asserts stdout carries only JSON-RPC (catches
+   shell-init/MOTD leakage before a host ever sees it);
+4. prints your `wsl -l -v` reminder and a ready-to-paste
+   `claude_desktop_config.json` snippet with your paths filled in;
+5. confirms the transport and prints the negotiated protocol version.
+
+### Tools and the `review` prompt
+
+Read-only tools, each wrapping a `beans … --json` command and returning
+structured output (`readOnlyHint: true`): `beans_income_statement`,
+`beans_balance_sheet`, `beans_cashflow`, `beans_analyze`,
+`beans_list_transactions`, `beans_search`, `beans_register`,
+`beans_budget_report`, `beans_forecast`, `beans_networth`,
+`beans_list_accounts`, `beans_economic_balance_sheet`, and
+`beans_review_bundle` (assembles the full analyst report set in one call). Bad
+account names come back with the closest real matches so the host can
+self-correct.
+
+The **`review`** prompt carries the CFO-style analyst framing (health read,
+what changed, ranked concerns, actionable suggestions; actuals vs assumptions;
+a "not licensed advice" note). Invoke it in the host; the model calls
+`beans_review_bundle`, then narrates.
+
+### Privacy & posture
+
+- **Local-first.** The server runs on your machine next to the ledger and never
+  reaches the network. It is the host, not `beans`, that talks to a model.
+- **Read-only by default.** Writes require `--allow-writes` *and* per-call host
+  approval.
+- Keep the ledger on the Linux filesystem (`~/.beans/…`), not under `/mnt/`.
+
+### Relationship to `beans ai`
+
+Both surfaces share one transport-agnostic core (`beans/_toolcore`: the
+read-only tool whitelist, the in-process runner, and the review bundle), so
+tool behavior is identical. `beans ai` is an in-process agent loop (useful
+headless/scriptable); `beans mcp` hands the loop to a full host with a real UI.
+The deterministic `beans review --json` remains a plain, non-AI CLI command for
+reproducible scripting.
 
 ---
 

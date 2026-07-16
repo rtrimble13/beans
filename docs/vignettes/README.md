@@ -57,6 +57,11 @@ whichever job you have in front of you.
    and use `--dry-run` and `--explain` to see exactly what is sent and every
    figure behind an answer — with hosted or fully local models.
 
+8. **[Using beans from Claude (MCP)](08-mcp.md)** — Connect `beans` to Claude
+   Desktop and Claude Code with the optional MCP server: run `beans mcp
+   doctor`, register the server across the WSL/Windows boundary, and use the
+   read-only tools and the `review` prompt from the host.
+
 ## Conventions used throughout
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured

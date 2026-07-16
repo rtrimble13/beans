@@ -16,14 +16,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      # Install the AI extra so the beans/ai modules and their mock-client
-      # tests are exercised. The `live` marker is excluded by default (see
-      # pyproject addopts), so this stays fully offline — no key, no network.
-      - run: pip install -e ".[dev,ai]"
+      # Install the AI and MCP extras so the beans/ai and beans/mcp modules
+      # and their offline tests (mock client, in-memory + subprocess MCP
+      # protocol) are exercised. The `live` and `boundary` markers are
+      # excluded by default (see pyproject addopts), so this stays fully
+      # offline — no key, no network, no Windows/WSL boundary. The Ubuntu
+      # runner is the WSL-equivalent userspace, so the MCP tests run here.
+      - run: pip install -e ".[dev,ai,mcp]"
       - run: pytest -q
 
-  # Guard the core promise: a non-AI install is untouched and `beans ai`
-  # degrades gracefully. Installs WITHOUT the extra on a single Python.
+  # Guard the core promise: a base install (no optional extras) is untouched,
+  # every module still imports, and `beans ai` degrades gracefully. Installs
+  # WITHOUT the ai/mcp extras on a single Python.
   no-ai-extra:
     runs-on: ubuntu-latest
     steps:
