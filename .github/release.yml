@@ -13,6 +13,9 @@ changelog:
       labels:
         - breaking
         - breaking-change
+    - title: AI assistant
+      labels:
+        - ai
     - title: New features
       labels:
         - feature

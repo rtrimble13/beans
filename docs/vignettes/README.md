@@ -52,6 +52,11 @@ whichever job you have in front of you.
    that reconciles with the accounting one, and model a retirement date, a
    pension, and an inheritance with a markdown config document.
 
+7. **[The AI assistant](07-ai-assistant.md)** — Turn on the optional, opt-in
+   `beans ai` group: ask questions in plain English, run a CFO-style review,
+   and use `--dry-run` and `--explain` to see exactly what is sent and every
+   figure behind an answer — with hosted or fully local models.
+
 ## Conventions used throughout
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured

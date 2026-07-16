@@ -40,8 +40,9 @@ shape of the tool and want the details on a specific command.
 24. [`currency` — multi-currency and FX](#currency--multi-currency-and-fx)
 25. [`export` / `backup` / `restore`](#export--backup--restore)
 26. [`completions` — shell completions](#completions--shell-completions)
-27. [Releasing & publishing](#releasing--publishing)
-28. [General best practices](#general-best-practices)
+27. [`ai` — AI assistant (optional)](#ai--ai-assistant-optional)
+28. [Releasing & publishing](#releasing--publishing)
+29. [General best practices](#general-best-practices)
 
 ---
 
@@ -1559,6 +1560,167 @@ beans completions zsh  > ~/.zfunc/_beans    # with fpath+=(~/.zfunc)
 - Regenerate/re-source completions after a `beans` upgrade that adds new
   commands, since the script is generated from the installed version's
   command set.
+
+---
+
+## `ai` — AI assistant (optional)
+
+`beans ai` is an **opt-in, off-by-default** command group and the only part of
+the tool that reaches the network. It maps a natural-language layer and a
+financial-analyst narrative onto the same read-only reporting commands
+documented above: the model never computes money — it reads the JSON that
+`beans <command> --json` already produces, so its figures cannot drift from
+your statements.
+
+### Installation and availability
+
+```sh
+pip install "beans-ledger[ai]"
+```
+
+The `[ai]` extra adds **no** third-party dependency — the LLM client uses the
+standard library (`urllib`). It exists as the install-time opt-in signal.
+Because there is no dependency to detect, availability is a matter of
+*configuration*: `beans ai ask` and `beans ai review` need a resolved provider
+key (or a local endpoint). Without one, they print a short install/configure
+notice and exit 0; the rest of the tool is entirely unaffected.
+
+### Group-level options
+
+These flags are shared by every `ai` verb — pass them after the subcommand
+(`beans ai ask --provider openai …`):
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--provider {anthropic,openai}` | LLM provider. `openai` also covers any OpenAI-compatible endpoint (local models). | `anthropic` |
+| `--model NAME` | Model name (provider-specific). | `claude-sonnet-5` / `gpt-4o` |
+| `--base-url URL` | API base URL; point at a local model (Ollama, LM Studio, vLLM) to keep data on-box. | provider default |
+| `--dry-run` | Print exactly what *would* be sent and send nothing to any provider. | off |
+
+### `beans ai` (bare)
+
+With a provider configured, prints the active provider/model, the data-flow
+line, and the available subcommands. Unconfigured, prints the graceful
+install/configure notice.
+
+### `ai ask`
+
+```
+beans ai ask [QUESTION ...] [--allow-writes] [--explain]
+```
+
+Ask in plain English. An agent loop plans, calls whitelisted **read-only**
+`beans` commands in-process, reads their JSON, and answers. With no question,
+starts an interactive REPL that keeps context across turns.
+
+| Option | Meaning | Default |
+|---|---|---|
+| `QUESTION` | The question. Omit for an interactive REPL. | — |
+| `--allow-writes` | Allow the agent to propose writes (`spend`/`earn`/`transfer`). Each is shown as its exact command and confirmed `[y/N]` before running. | off (read-only) |
+| `--explain` | After the answer, print every command the agent ran and the JSON it returned — an auditable trace. | off |
+
+The agent loop is capped (`ai.max_iterations`, default 8) as a runaway guard,
+mirroring the tool's other bounds. Examples:
+
+```sh
+beans ai ask "how much did I spend on eating out last quarter vs the one before?"
+beans ai ask "am I over budget anywhere this month?"
+beans ai ask --explain "what's my runway if I lost my job today?"
+beans ai ask                       # interactive REPL
+```
+
+### `ai review`
+
+```
+beans ai review [-p PERIOD] [--compare PERIOD] [--focus economic]
+                [--brief] [--json]
+```
+
+Assembles a fixed, deterministic bundle of read-only reports — income
+statement (with prior-period comparison), classified balance sheet, cash
+flow, `analyze` ratios, budget variance, and the net-worth trend — and asks
+the model for a CFO-style briefing: a headline read, what changed and why,
+ranked concerns, and concrete suggestions tied to the actual numbers. Purely
+read-only; there is no write path.
+
+| Option | Meaning | Default |
+|---|---|---|
+| `-p`, `--period SPEC` | Reporting period (same specs as elsewhere: `ytd`, `this-month`, `2026-Q1`, …). | each report's own default |
+| `--from` / `--to DATE` | Explicit period bounds; override `--period`. | — |
+| `--compare PERIOD` | Also gather this period's income statement for an explicit side-by-side. | — |
+| `--focus economic` | Additionally narrate the economic balance sheet (human-capital NPV, lifetime consumption, economic net worth). | — |
+| `--brief` | A 3-bullet TL;DR instead of a full briefing. | off |
+| `--json` | Emit structured findings (period, health, changes, concerns, suggestions) instead of prose, for scripting. | off |
+
+```sh
+beans ai review
+beans ai review --period ytd --compare last-quarter
+beans ai review --focus economic
+beans ai review --json | jq .concerns
+```
+
+### `ai config`
+
+```
+beans ai config {list|get|set} [KEY] [VALUE]
+```
+
+Reads and writes settings under the `ai.*` keyspace (stored in the ledger's
+metadata, separate from the global `config`).
+
+| Key | Meaning |
+|---|---|
+| `ai.provider` | `anthropic` or `openai`. |
+| `ai.model` | Model name. |
+| `ai.base_url` | API base URL (set a local endpoint here). |
+| `ai.max_tokens` | Max tokens per response (default 2048). |
+| `ai.max_iterations` | Agent-loop cap for `ask` (default 8). |
+| `ai.redact` | `true` to scrub payee/description text before sending. |
+| `ai.privacy_ack` | Set automatically once the one-time privacy notice has been shown. |
+
+### Provider setup and resolution order
+
+Every setting resolves **most-specific-first**: a CLI flag, then a stored
+`ai.*` setting, then the environment, then the built-in default.
+
+| Provider | Env var(s) | Default endpoint |
+|---|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` or `BEANS_AI_KEY` | `https://api.anthropic.com` |
+| `openai` (and compatible) | `OPENAI_API_KEY` or `BEANS_AI_KEY` | `https://api.openai.com/v1` |
+
+For a **local model**, set `ai.base_url` (or `--base-url`) to your endpoint;
+no hosted key is required:
+
+```sh
+beans ai config set ai.provider openai
+beans ai config set ai.base_url http://localhost:11434/v1   # Ollama
+beans ai config set ai.model llama3.1
+```
+
+### Privacy & data flow
+
+- **What leaves the machine:** only the JSON output of the read-only commands
+  the assistant runs (for `review`, the fixed bundle). The ledger file itself
+  is never uploaded.
+- **When, and to whom:** at the moment you run `ask`/`review`, to the
+  configured provider over HTTPS — or to your local endpoint, in which case
+  nothing leaves the machine. A one-time notice states this the first time.
+- **The escape hatch:** `--dry-run` prints exactly what would be sent and
+  contacts no one. `ai.redact true` replaces payee/description text with
+  stable placeholders before sending.
+- **Writes stay gated:** even with `--allow-writes`, every mutation is shown
+  as its exact command line and confirmed `[y/N]` before it runs.
+
+### Best practices
+
+- Start with `--dry-run` on a new setup to see precisely what a question or
+  review would send before it sends anything.
+- Use `--explain` when you want to trust-but-verify an answer — it shows the
+  exact `beans` commands and JSON behind every figure.
+- Prefer a local model (`ai.base_url`) if you'd rather no financial data
+  leave your machine; the feature is provider-agnostic.
+- Keep `ask` read-only for exploration; add `--allow-writes` only when you
+  intend to record something, and read each confirmation prompt.
 
 ---
 

@@ -37,8 +37,16 @@ personal finance.
   (`groceries` → `Expenses:Food:Groceries`), full-text search, undo,
   deduplicating CSV import with auto-categorization rules, shell
   completions, and `--json` output on every report for scripting.
-- **No dependencies** — pure Python standard library; data lives in a single
-  SQLite file you own.
+- **AI assistant (optional)** — an opt-in `beans ai` command group: ask
+  questions in plain English (`beans ai ask`) and get a CFO-style narrative
+  review of your finances (`beans ai review`). Off by default, read-only,
+  with a `--dry-run` transparency switch and support for local models so
+  nothing has to leave your machine. See
+  [AI assistant](#ai-assistant-optional).
+- **No dependencies** — the core is pure Python standard library and fully
+  offline; data lives in a single SQLite file you own. The optional `[ai]`
+  extra adds the only networked feature — and even it uses just the standard
+  library, so installing it adds no third-party dependency.
 
 ## Installation
 
@@ -107,6 +115,9 @@ captured output:
 6. [The economic balance sheet](docs/vignettes/06-economic-balance-sheet.md) —
    value human capital and future consumption to see lifetime net worth
    alongside the accounting balance sheet.
+7. [The AI assistant](docs/vignettes/07-ai-assistant.md) — install the
+   optional extra, configure a provider (hosted or local), and ask questions
+   and run reviews over your ledger with full transparency.
 
 The rest of this README is the command reference. For the full instruction
 manual — every command, every flag, with parameter tables and best practices
@@ -479,6 +490,54 @@ beans completions zsh  > ~/.zfunc/_beans    # with fpath+=(~/.zfunc)
 
 Completes commands, subcommands, and account names (via
 `beans account list --names`).
+
+## AI assistant (optional)
+
+`beans ai` is an opt-in, off-by-default command group — the only part of the
+tool that reaches the network. Install the extra (it adds **no** third-party
+dependency; the client uses the standard library) and set a provider key:
+
+```sh
+pip install "beans-ledger[ai]"
+export ANTHROPIC_API_KEY=sk-...        # or BEANS_AI_KEY, or an OpenAI key
+```
+
+Ask questions in plain English — an agent runs read-only `beans` commands and
+reads their JSON to answer, so figures never drift from what `beans report`
+would show:
+
+```sh
+beans ai ask "how much did I spend on eating out last quarter vs the one before?"
+beans ai ask --explain "am I over budget anywhere this month?"   # show the commands it ran
+```
+
+Get a CFO-style narrative over your statements and ratios:
+
+```sh
+beans ai review                        # this-period briefing
+beans ai review --brief --period ytd   # 3-bullet TL;DR
+```
+
+**Privacy & data flow.** Only the JSON of the read-only commands the assistant
+chooses to run is sent to the provider — never the ledger file itself, and
+nothing is written back without a per-command confirmation showing the exact
+command. `--dry-run` prints exactly what would be sent and sends nothing:
+
+```sh
+beans ai review --dry-run              # print the bundle, contact no one
+```
+
+**Local models.** Point at any OpenAI-compatible endpoint (Ollama, LM Studio,
+vLLM) to keep everything on-box:
+
+```sh
+beans ai config set ai.provider openai
+beans ai config set ai.base_url http://localhost:11434/v1
+beans ai ask "what's my runway if I lost my job today?"
+```
+
+See [`docs/MANUAL.md`](docs/MANUAL.md) for the full `ai` reference and the
+[AI assistant vignette](docs/vignettes/07-ai-assistant.md) for a walkthrough.
 
 ## Customization
 

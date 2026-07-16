@@ -11,7 +11,8 @@ description = "Professional-grade double-entry accounting for personal finance"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["accounting", "finance", "double-entry", "budgeting", "cli"]
+keywords = ["accounting", "finance", "double-entry", "budgeting", "cli",
+            "ai", "llm"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
@@ -29,8 +30,15 @@ Issues = "https://github.com/rtrimble13/beans/issues"
 PyPI = "https://pypi.org/project/beans-ledger/"
 
 [project.optional-dependencies]
+# The AI assistant is opt-in and adds NO third-party dependency: the client
+# uses the standard library (urllib). The extra exists as the install-time
+# opt-in signal and a place to hang any future AI-only dependency; it also
+# keeps the network-capable code discoverable behind a flag the user chooses.
+ai = []
 dev = ["pytest"]
 release = ["build", "twine"]
+# Convenience aggregate.
+all = ["beans-ledger[ai]"]
 
 [tool.setuptools.dynamic]
 version = { attr = "beans.__version__" }
@@ -40,3 +48,5 @@ include = ["beans*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["live: exercises a real LLM provider; skipped by default"]
+addopts = "-m 'not live'"

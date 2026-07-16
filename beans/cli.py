@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from datetime import date
@@ -1215,6 +1216,139 @@ def cmd_completions(args) -> int:
     return 0
 
 
+# -- ai (optional AI assistant) ----------------------------------------------
+#
+# The `ai` group is the only part of the command tree that reaches the network
+# or pulls in the optional extra. Everything here imports `beans.ai` lazily so
+# the base tool never pays for it, and every verb passes through one gate that
+# degrades gracefully when no provider is configured.
+
+
+def _ai_config(args):
+    """Resolve the AI config for this invocation (lazy import)."""
+    from beans.ai import config as ai_config
+    led = _open(args)
+    return led, ai_config.resolve(args, led)
+
+
+def _ai_ack_privacy(led, cfg) -> None:
+    """Show the one-time privacy notice before data first leaves the machine,
+    then remember that it was shown."""
+    if cfg.privacy_ack or cfg.dry_run:
+        return
+    from beans import ai
+    print(ai.privacy_notice(cfg))
+    led.set_meta("ai.privacy_ack", "true")
+
+
+def _ai_unavailable(cfg) -> int:
+    """Print the graceful-degradation notice and exit cleanly."""
+    print(cfg.missing_reason())
+    return 0
+
+
+def cmd_ai(args) -> int:
+    """Bare `beans ai`: status + privacy notice when configured, or the
+    graceful-degradation notice when not."""
+    from beans import ai
+    led, cfg = _ai_config(args)
+    if not cfg.configured:
+        return _ai_unavailable(cfg)
+    print("beans ai — optional AI assistant")
+    print(f"  provider : {cfg.provider}")
+    print(f"  model    : {cfg.model}")
+    if cfg.is_local:
+        print(f"  endpoint : {cfg.base_url} (local)")
+    if cfg.key_source:
+        print(f"  key      : from ${cfg.key_source}")
+    print(f"  redaction: {'on' if cfg.redact else 'off'}")
+    print()
+    print("  " + ai.data_flow_line(cfg))
+    print()
+    print("Subcommands:")
+    print("  beans ai ask [question]   ask in plain English (read-only)")
+    print("  beans ai review           a financial-analyst narrative")
+    print("  beans ai config           provider / model / privacy settings")
+    print("\nAdd --dry-run to any command to see what would be sent without "
+          "sending it.")
+    return 0
+
+
+def cmd_ai_config(args) -> int:
+    from beans.ai import config as ai_config
+    led = _open(args)
+    if args.action == "list":
+        any_set = False
+        for key in ai_config.CONFIG_KEYS:
+            value = led.get_meta(key)
+            if value is not None:
+                print(f"{key} = {value}")
+                any_set = True
+        if not any_set:
+            print("No ai.* settings stored. Set one with: "
+                  "beans ai config set ai.provider anthropic")
+        return 0
+    if args.action == "get":
+        if not args.key:
+            raise BeansError("usage: beans ai config get <key>")
+        value = led.get_meta(args.key)
+        if value is None:
+            raise BeansError(f"no config key {args.key!r}")
+        print(value)
+        return 0
+    # set
+    if not args.key or args.value is None:
+        raise BeansError("usage: beans ai config set <key> <value>")
+    if args.key not in ai_config.CONFIG_KEYS:
+        allowed = ", ".join(ai_config.CONFIG_KEYS)
+        raise BeansError(f"unknown ai config key {args.key!r} "
+                         f"(allowed: {allowed})")
+    if args.key == "ai.provider" and args.value not in ai_config.PROVIDERS:
+        raise BeansError(
+            f"provider must be one of: {', '.join(ai_config.PROVIDERS)}")
+    led.set_meta(args.key, args.value)
+    print(f"{args.key} = {args.value}")
+    return 0
+
+
+def cmd_ai_ask(args) -> int:
+    from beans.ai import ask as ai_ask
+    from beans.ai.client import build_client
+    led, cfg = _ai_config(args)
+    if cfg.dry_run:
+        if not args.question:
+            raise BeansError("--dry-run needs a question to preview")
+        return ai_ask.dry_run(" ".join(args.question), cfg, args.allow_writes)
+    if not cfg.configured:
+        return _ai_unavailable(cfg)
+    _ai_ack_privacy(led, cfg)
+    client = build_client(cfg)
+    if not args.question:
+        return ai_ask.run_repl(led, client=client, cfg=cfg,
+                               allow_writes=args.allow_writes,
+                               explain=args.explain)
+    return ai_ask.run_ask(led, " ".join(args.question), client=client,
+                          cfg=cfg, allow_writes=args.allow_writes,
+                          explain=args.explain)
+
+
+def cmd_ai_review(args) -> int:
+    from beans.ai import review as ai_review
+    from beans.ai.client import build_client
+    led, cfg = _ai_config(args)
+    if cfg.dry_run:
+        return ai_review.dry_run(led, cfg, period=args.period,
+                                 compare=args.compare, focus=args.focus)
+    if not cfg.configured:
+        return _ai_unavailable(cfg)
+    _ai_ack_privacy(led, cfg)
+    client = build_client(cfg)
+    return ai_review.run_review(led, client=client, cfg=cfg,
+                                period=args.period, compare=args.compare,
+                                focus=args.focus, brief=args.brief,
+                                structured=args.json)
+
+
 # -- argument parsing --------------------------------------------------------
 
 
@@ -1838,7 +1972,72 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("shell", choices=["bash", "zsh"])
     p.set_defaults(func=cmd_completions)
 
+    _add_ai_parser(sub)
+
     return parser
+
+
+def _add_ai_group_flags(parser: argparse.ArgumentParser) -> None:
+    """Flags shared by every `ai` verb, added to each subcommand via a common
+    parent parser so `beans ai <verb> --provider x` works uniformly. (They
+    live on the verbs rather than the bare group because argparse subparsers
+    overwrite a value set before the subcommand with their own default.)"""
+    parser.add_argument("--provider", choices=["anthropic", "openai"],
+                        help="LLM provider (default: anthropic)")
+    parser.add_argument("--model", help="model name (provider-specific)")
+    parser.add_argument("--base-url", dest="base_url", metavar="URL",
+                        help="API base URL; point at a local model "
+                             "(e.g. Ollama) to keep data on-box")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="show what would be sent without sending "
+                             "anything to a provider")
+
+
+def _add_ai_parser(sub) -> None:
+    common = argparse.ArgumentParser(add_help=False)
+    _add_ai_group_flags(common)
+
+    p_ai = sub.add_parser(
+        "ai",
+        help="optional AI assistant (opt-in; the only networked feature)")
+    p_ai.set_defaults(func=cmd_ai)
+    ai_sub = p_ai.add_subparsers(dest="subcommand", metavar="subcommand")
+
+    p = ai_sub.add_parser(
+        "ask", parents=[common],
+        help="ask in plain English; the agent runs read-only beans commands",
+        epilog="Example: beans ai ask \"am I over budget anywhere this "
+               "month?\"  (no question → interactive REPL)")
+    p.add_argument("question", nargs="*",
+                   help="the question (omit for an interactive session)")
+    p.add_argument("--allow-writes", action="store_true",
+                   help="let the agent propose writes; each is confirmed "
+                        "against its exact command before running")
+    p.add_argument("--explain", action="store_true",
+                   help="also print the commands that ran and their JSON")
+    p.set_defaults(func=cmd_ai_ask)
+
+    p = ai_sub.add_parser(
+        "review", parents=[common],
+        help="a financial-analyst narrative over your statements and ratios")
+    _add_period_args(p)
+    p.add_argument("--compare", metavar="PERIOD",
+                   help="also gather this period's income statement for "
+                        "an explicit comparison")
+    p.add_argument("--focus", choices=["economic"],
+                   help="narrate a specific area (economic balance sheet)")
+    p.add_argument("--brief", action="store_true",
+                   help="a 3-bullet TL;DR instead of a full briefing")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_ai_review)
+
+    p = ai_sub.add_parser(
+        "config", parents=[common],
+        help="get/set AI provider, model, endpoint, and privacy settings")
+    p.add_argument("action", choices=["get", "set", "list"])
+    p.add_argument("key", nargs="?")
+    p.add_argument("value", nargs="?")
+    p.set_defaults(func=cmd_ai_config)
 
 
 # Commands after which a "recurring rules due" reminder would be noise.
@@ -1867,9 +2066,23 @@ def _due_reminder(args) -> None:
         pass
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, led=None, capture=None) -> int:
+    """Run one beans command.
+
+    `led`: an already-open Ledger to reuse instead of opening one from
+    `--file`. When supplied, `main` leaves it open for the caller to close
+    (the in-process AI tool runner passes the same ledger across many calls,
+    avoiding a re-open per call).
+
+    `capture`: an optional file-like object; when set, the command prints
+    into it instead of the real stdout. Together these let a caller invoke a
+    `beans` subcommand and read its JSON without spawning a subprocess. The
+    plain `sys.exit(main())` entry point is unaffected.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
+    if led is not None:
+        args._ledger = led
     if not getattr(args, "func", None):
         name = getattr(args, "command", None)
         if name is None:
@@ -1891,7 +2104,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return 2
     try:
-        code = args.func(args)
+        with (contextlib.redirect_stdout(capture) if capture is not None
+              else contextlib.nullcontext()):
+            code = args.func(args)
         if code == 0:
             _due_reminder(args)
         return code
@@ -1901,9 +2116,10 @@ def main(argv: list[str] | None = None) -> int:
     except BrokenPipeError:
         return 0
     finally:
-        led = getattr(args, "_ledger", None)
-        if led is not None:
-            led.close()
+        opened = getattr(args, "_ledger", None)
+        # Only close a ledger we opened; a caller-supplied `led` is theirs.
+        if opened is not None and led is None:
+            opened.close()
 
 
 if __name__ == "__main__":
