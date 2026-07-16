@@ -177,6 +177,21 @@ def test_unknown_tool_is_tool_error(ledger):
     assert resp["result"]["isError"] is True
 
 
+def test_server_survives_argparse_exit(ledger):
+    # A tool argument that trips argparse (which raises SystemExit) must not
+    # tear down the stdio loop: a later request in the same session must still
+    # get a response.
+    resps = drive(
+        MCPServer(ledger),
+        _call("beans_search", {"query": "-tax-"}, mid=8),
+        _call("beans_income_statement", {"period": "2026"}, mid=9),
+    )
+    by_id = {r["id"]: r for r in resps}
+    assert by_id[8]["result"]["isError"] is True     # reported, not crashed
+    assert by_id[9]["result"].get("isError") is not True  # loop survived
+    assert "structuredContent" in by_id[9]["result"]
+
+
 # -- prompts -----------------------------------------------------------------
 
 

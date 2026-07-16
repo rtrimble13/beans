@@ -125,6 +125,17 @@ class Runner:
                 code = cli.main(argv, led=self.led, capture=buffer)
         except BeansError as exc:
             return ToolResult(name=name, argv=argv, ok=False, error=str(exc))
+        except SystemExit as exc:
+            # argparse calls sys.exit() on a parse error (e.g. an argument
+            # value that looks like an unknown option, a bad --limit, or an
+            # out-of-choices value). SystemExit is a BaseException, so the
+            # broad `except Exception` below would miss it — catch it here and
+            # report it, rather than letting it tear down the caller's agent
+            # loop or the MCP stdio server.
+            detail = errbuf.getvalue().strip().replace("beans: error: ", "", 1)
+            return ToolResult(
+                name=name, argv=argv, ok=False,
+                error=detail or f"invalid arguments (exited {exc.code})")
         except Exception as exc:  # defensive: never let a tool crash the loop
             return ToolResult(name=name, argv=argv, ok=False,
                               error=f"{type(exc).__name__}: {exc}")

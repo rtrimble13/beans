@@ -195,6 +195,20 @@ def test_ask_survives_malformed_then_recovers(ledger):
                for m in client.calls[1] if m["role"] == "tool")
 
 
+def test_runner_survives_argparse_exit(ledger):
+    # argparse raises SystemExit on a parse error (a query that looks like an
+    # option, a non-int limit, an out-of-choices value). The runner must
+    # convert that to an error, not let it tear down the caller.
+    for name, args in [
+        ("search", {"query": "-tax-"}),
+        ("list_transactions", {"limit": "not-an-int"}),
+        ("get_forecast", {"method": "bogus"}),
+    ]:
+        result = Runner(ledger).run(name, args)
+        assert not result.ok
+        assert result.error
+
+
 def test_search_tool_roundtrip(ledger):
     runner = Runner(ledger)
     result = runner.run("search", {"query": "Whole Foods"})
