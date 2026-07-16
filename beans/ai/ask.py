@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 
 from . import prompts, tools as _tools
-from .runner import Runner
+from .runner import Runner, _quote
 
 
 def _print_trace(runner: Runner, out) -> None:
@@ -35,10 +35,6 @@ def _print_trace(runner: Runner, out) -> None:
 
 def _indent(text: str, prefix: str = "  ") -> str:
     return "\n".join(prefix + line for line in text.splitlines())
-
-
-def _quote(arg: str) -> str:
-    return f'"{arg}"' if " " in arg else arg
 
 
 def dry_run(question: str, cfg, allow_writes: bool, out=None) -> int:

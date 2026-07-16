@@ -13,6 +13,7 @@ user says yes.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 from dataclasses import dataclass
@@ -92,16 +93,26 @@ class Runner:
                 self.trace.append(result)
                 return result
 
-        result = self._execute(name, argv)
+        result = self.run_argv(name, argv)
         self.trace.append(result)
         return result
 
-    def _execute(self, name: str, argv: list[str]) -> ToolResult:
+    def run_argv(self, name: str, argv: list[str]) -> ToolResult:
+        """Execute a beans `argv` in-process and capture its result. Used both
+        for whitelisted tool calls and for the review bundle's fixed reports;
+        does no write-confirmation, so callers gate mutating commands via
+        :meth:`run`."""
         from beans import cli  # local import avoids an import cycle
 
         buffer = io.StringIO()
+        errbuf = io.StringIO()
         try:
-            code = cli.main(argv, led=self.led, capture=buffer)
+            # main() prints a failed command's "beans: error: …" to stderr and
+            # returns 1 rather than raising; capture stderr too so that detail
+            # reaches the model (to self-correct) instead of leaking onto the
+            # user's terminal mid-conversation.
+            with contextlib.redirect_stderr(errbuf):
+                code = cli.main(argv, led=self.led, capture=buffer)
         except BeansError as exc:
             return ToolResult(name=name, argv=argv, ok=False, error=str(exc))
         except Exception as exc:  # defensive: never let a tool crash the loop
@@ -109,8 +120,11 @@ class Runner:
                               error=f"{type(exc).__name__}: {exc}")
         output = buffer.getvalue().strip()
         if code != 0:
+            error = errbuf.getvalue().strip() or output
+            # Drop the "beans: error: " prefix main() adds, for a clean message.
+            error = error.replace("beans: error: ", "", 1)
             return ToolResult(name=name, argv=argv, ok=False,
-                              error=output or f"command exited {code}")
+                              error=error or f"command exited {code}")
         # Read-only tools emit JSON; the confirmed write shortcuts (spend,
         # earn, transfer) print a human confirmation line — keep that as-is.
         if output:

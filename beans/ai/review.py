@@ -51,9 +51,9 @@ def assemble_bundle(led, *, period=None, compare=None,
     runner = Runner(led, redact=redact)
     statements: dict[str, object] = {}
     for label, argv in _bundle_spec(period, compare, focus):
-        # argv[0]/[1] name the command; strip the leading tokens that the
-        # tool name already implies by re-running through cli directly.
-        result = runner._execute(label, argv)
+        # These are fixed, read-only report commands (not model-chosen tool
+        # names), so run the argv straight through the shared executor.
+        result = runner.run_argv(label, argv)
         if result.ok:
             statements[label] = result.data
         else:

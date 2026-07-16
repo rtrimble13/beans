@@ -154,6 +154,18 @@ def test_runner_unknown_tool(ledger):
     assert not result.ok  # write tool absent without allow_writes
 
 
+def test_runner_captures_error_detail(ledger, capsys):
+    # A failing command's real error must reach the model (not a generic
+    # "exited 1") and must NOT leak onto the user's stderr mid-conversation.
+    runner = Runner(ledger)
+    result = runner.run("get_register", {"account": "NoSuchAccount"})
+    assert not result.ok
+    assert "NoSuchAccount" in result.error
+    assert "beans: error:" not in result.error   # prefix stripped
+    captured = capsys.readouterr()
+    assert "NoSuchAccount" not in captured.err    # nothing leaked to stderr
+
+
 def test_search_tool_roundtrip(ledger):
     runner = Runner(ledger)
     result = runner.run("search", {"query": "Whole Foods"})
