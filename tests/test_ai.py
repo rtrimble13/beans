@@ -166,6 +166,34 @@ def test_runner_captures_error_detail(ledger, capsys):
     assert "NoSuchAccount" not in captured.err    # nothing leaked to stderr
 
 
+def test_runner_malformed_tool_call(ledger):
+    # A call missing a required argument must not crash the loop.
+    runner = Runner(ledger)
+    result = runner.run("search", {})          # required "query" omitted
+    assert not result.ok
+    assert "invalid arguments" in result.error
+    assert "declined" not in result.to_content()
+
+
+def test_ask_survives_malformed_then_recovers(ledger):
+    # The agent emits a bad call, gets the error, then a good one and answers.
+    client = MockClient([
+        Response(tool_calls=[ToolCall("t1", "get_register", {})],  # no account
+                 stop_reason="tool_use"),
+        Response(tool_calls=[ToolCall("t2", "get_analysis", {})],
+                 stop_reason="tool_use"),
+        Response(text="Here's your summary.", stop_reason="end_turn"),
+    ])
+    out = io.StringIO()
+    code = ai_ask.run_ask(ledger, "how am I doing?", client=client,
+                          cfg=ai_config.resolve(None, ledger), out=out)
+    assert code == 0
+    assert "Here's your summary." in out.getvalue()
+    # The model saw the invalid-arguments error for the first call.
+    assert any("invalid arguments" in m.get("content", "")
+               for m in client.calls[1] if m["role"] == "tool")
+
+
 def test_search_tool_roundtrip(ledger):
     runner = Runner(ledger)
     result = runner.run("search", {"query": "Whole Foods"})

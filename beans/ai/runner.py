@@ -83,7 +83,17 @@ class Runner:
             self.trace.append(result)
             return result
 
-        argv = tool.build_argv(arguments or {})
+        try:
+            argv = tool.build_argv(arguments or {})
+        except (KeyError, TypeError, ValueError) as exc:
+            # The model emitted a call missing a required argument (or a
+            # malformed one). Report it so the model can retry rather than
+            # letting an unhandled exception crash the agent loop.
+            result = ToolResult(
+                name=name, argv=[], ok=False,
+                error=f"invalid arguments for {name!r}: missing or bad {exc}")
+            self.trace.append(result)
+            return result
 
         if tool.writes:
             command = "beans " + " ".join(_quote(a) for a in argv)
