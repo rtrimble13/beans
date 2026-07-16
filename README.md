@@ -43,10 +43,15 @@ personal finance.
   with a `--dry-run` transparency switch and support for local models so
   nothing has to leave your machine. See
   [AI assistant](#ai-assistant-optional).
+- **Use it from Claude (optional MCP)** — an opt-in `beans mcp` server exposes
+  the ledger as read-only tools and a `review` prompt to Claude Desktop and
+  Claude Code, so Claude can read your finances directly. Local-first,
+  read-only by default. See [Use beans from Claude](#use-beans-from-claude-mcp).
 - **No dependencies** — the core is pure Python standard library and fully
-  offline; data lives in a single SQLite file you own. The optional `[ai]`
-  extra adds the only networked feature — and even it uses just the standard
-  library, so installing it adds no third-party dependency.
+  offline; data lives in a single SQLite file you own. The optional extras add
+  the only opt-in surfaces: `[ai]` reaches a model provider (the sole networked
+  feature), and `[mcp]` runs a local server for Claude — and **both** are built
+  on just the standard library, so neither adds a third-party dependency.
 
 ## Installation
 
@@ -118,6 +123,9 @@ captured output:
 7. [The AI assistant](docs/vignettes/07-ai-assistant.md) — install the
    optional extra, configure a provider (hosted or local), and ask questions
    and run reviews over your ledger with full transparency.
+8. [Using beans from Claude (MCP)](docs/vignettes/08-mcp.md) — connect the
+   optional MCP server to Claude Desktop and Claude Code so Claude can read
+   your ledger directly, read-only and local-first.
 
 The rest of this README is the command reference. For the full instruction
 manual — every command, every flag, with parameter tables and best practices
@@ -538,6 +546,40 @@ beans ai ask "what's my runway if I lost my job today?"
 
 See [`docs/MANUAL.md`](docs/MANUAL.md) for the full `ai` reference and the
 [AI assistant vignette](docs/vignettes/07-ai-assistant.md) for a walkthrough.
+
+## Use beans from Claude (MCP)
+
+`beans mcp` is an opt-in [MCP](https://modelcontextprotocol.io) server — the
+way to let **Claude Desktop** and **Claude Code** read your ledger directly.
+The host owns the model; `beans` just answers tool calls, locally and read-only
+by default. There is no API key in `beans` and no embedded LLM (that's the
+separate `[ai]` feature). The `[mcp]` extra adds no third-party dependency —
+the protocol is hand-rolled on the standard library.
+
+```sh
+pip install "beans-ledger[mcp]"
+beans mcp doctor        # verifies your setup and prints a ready-to-paste config
+```
+
+`doctor` finds your `beans-mcp` path and ledger, starts the server to confirm a
+clean protocol stream, and prints a filled-in `claude_desktop_config.json`
+snippet. Register it with Claude Code inside WSL:
+
+```sh
+claude mcp add beans --scope user -- beans-mcp --file ~/.beans/ledger.db
+```
+
+Then ask Claude about your finances — it calls read-only tools
+(`beans_income_statement`, `beans_analyze`, …) and a `review` prompt, so its
+numbers match your statements exactly. Writes are off unless you pass
+`--allow-writes`, and even then the host approves each call.
+
+The important detail for most setups is the **WSL/Windows boundary** (beans in
+WSL, Claude Desktop on Windows). The focused guide —
+[`docs/mcp-setup-wsl.md`](docs/mcp-setup-wsl.md) — covers the
+`claude_desktop_config.json` block, the native-Windows fallback, and a
+troubleshooting table; the [MCP vignette](docs/vignettes/08-mcp.md) is a
+start-to-finish walkthrough.
 
 ## Customization
 

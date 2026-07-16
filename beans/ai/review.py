@@ -15,62 +15,21 @@ import sys
 from beans.utils import BeansError
 
 from . import prompts
-from .runner import Runner
-
-
-def _bundle_spec(period: str | None, compare: str | None,
-                 focus: str | None) -> list[tuple[str, list[str]]]:
-    """The ordered (label, argv) pairs gathered for a review."""
-    per = ["--period", period] if period else []
-    spec = [
-        ("income_statement", ["report", "income", "--json", "--compare"]
-         + per),
-        ("balance_sheet", ["report", "balance", "--json"]),
-        ("cash_flow", ["report", "cashflow", "--json"] + per),
-        ("analysis", ["analyze", "--json"] + per),
-        ("budget", ["budget", "report", "--json"] + per),
-        ("net_worth", ["networth", "--json"]),
-    ]
-    if compare:
-        spec.append(("income_statement_comparison",
-                     ["report", "income", "--json", "--period", compare]))
-    if focus == "economic":
-        spec.append(("economic_balance_sheet",
-                     ["economic", "bs", "--json"]))
-    return spec
+from beans._toolcore.bundle import assemble_review_bundle
+from beans._toolcore.runner import Runner
 
 
 def assemble_bundle(led, *, period=None, compare=None,
                     focus=None, redact=False) -> dict:
-    """Run the fixed report set in-process and collect their JSON. A report
-    that legitimately can't run (e.g. no budgets set) is recorded with its
-    error rather than aborting the review.
+    """Run the fixed review report set in-process and collect their JSON.
 
     ``redact`` mirrors the ai.redact preference so a review scrubs
-    payee/description text before it is sent, exactly as ``ask`` does."""
+    payee/description text before it is sent, exactly as ``ask`` does. The
+    bundle spec itself lives in ``_toolcore`` so the MCP `beans_review_bundle`
+    tool reads exactly the same set."""
     runner = Runner(led, redact=redact)
-    statements: dict[str, object] = {}
-    for label, argv in _bundle_spec(period, compare, focus):
-        # These are fixed, read-only report commands (not model-chosen tool
-        # names), so run the argv straight through the shared executor.
-        result = runner.run_argv(label, argv)
-        if result.ok:
-            statements[label] = result.data
-        else:
-            statements[label] = {"unavailable": result.error}
-    return {"period": _period_label(period, statements), "statements":
-            statements}
-
-
-def _period_label(period: str | None, statements: dict) -> str:
-    if period:
-        return period
-    income = statements.get("income_statement")
-    if isinstance(income, dict):
-        for key in ("period", "label"):
-            if isinstance(income.get(key), str):
-                return income[key]
-    return "current period"
+    return assemble_review_bundle(runner, period=period, compare=compare,
+                                  focus=focus)
 
 
 def _collect_numbers(value, acc: set) -> None:

@@ -15,9 +15,10 @@ import pytest
 from beans import cli
 from beans.ai import config as ai_config
 from beans.ai import ask as ai_ask
-from beans.ai import redaction, review as ai_review
+from beans.ai import review as ai_review
 from beans.ai.client import Response, ToolCall
-from beans.ai.runner import Runner
+from beans._toolcore import redaction
+from beans._toolcore.runner import Runner
 from beans.ledger import Ledger
 from beans.models import Posting
 

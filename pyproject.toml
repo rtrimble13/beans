@@ -12,7 +12,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["accounting", "finance", "double-entry", "budgeting", "cli",
-            "ai", "llm"]
+            "ai", "llm", "mcp"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
@@ -22,6 +22,9 @@ classifiers = [
 
 [project.scripts]
 beans = "beans.cli:main"
+# Stable absolute entry point for the MCP stdio server; targeted directly by
+# the wsl.exe invocation in host configs (no shell, keeps stdout clean).
+beans-mcp = "beans.mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/rtrimble13/beans"
@@ -35,10 +38,14 @@ PyPI = "https://pypi.org/project/beans-ledger/"
 # opt-in signal and a place to hang any future AI-only dependency; it also
 # keeps the network-capable code discoverable behind a flag the user chooses.
 ai = []
+# The MCP server is opt-in and also adds NO third-party dependency: the
+# JSON-RPC stdio transport is hand-rolled on the standard library. The extra
+# is the install-time opt-in signal (and gives `beans-mcp` a home).
+mcp = []
 dev = ["pytest"]
 release = ["build", "twine"]
 # Convenience aggregate.
-all = ["beans-ledger[ai]"]
+all = ["beans-ledger[ai,mcp]"]
 
 [tool.setuptools.dynamic]
 version = { attr = "beans.__version__" }
@@ -48,5 +55,8 @@ include = ["beans*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: exercises a real LLM provider; skipped by default"]
-addopts = "-m 'not live'"
+markers = [
+    "live: exercises a real LLM provider; skipped by default",
+    "boundary: needs a real Windows+WSL boundary; manual, skipped by default",
+]
+addopts = "-m 'not live and not boundary'"

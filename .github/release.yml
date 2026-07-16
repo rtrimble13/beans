@@ -16,6 +16,9 @@ changelog:
     - title: AI assistant
       labels:
         - ai
+    - title: MCP server
+      labels:
+        - mcp
     - title: New features
       labels:
         - feature
