@@ -4,7 +4,14 @@ Each row needs a date, a description, and a signed amount (positive =
 money into the target account). The counter-account is resolved in
 order: the row's category column, then saved import rules matched
 against the description (`beans rule add "WHOLE FOODS" Groceries`),
-then the --category fallback.
+then — only when `learn` is set — what the ledger's own history says
+about that merchant, and finally the --category fallback.
+
+History inference is opt-in here on purpose. `import` writes to the
+ledger, and an inferred account that nobody reviewed is exactly the
+mistake you find out about a month later. The reviewable path is
+`beans categorize`, which applies the same classifier and hands you a
+file to check first.
 
 Re-importing overlapping bank exports is safe: deduplication is
 count-aware. For each (date, account, amount) key it skips only as
@@ -22,6 +29,7 @@ from collections import Counter
 from pathlib import Path
 
 from beans.ledger import Ledger
+from beans.matching import resolve_columns
 from beans.models import Account, Posting
 from beans.utils import BeansError, parse_amount, parse_date
 
@@ -50,12 +58,17 @@ def import_csv(
     category_col: str = "category",
     dry_run: bool = False,
     dedupe: bool = True,
+    learn: bool = False,
 ) -> dict:
     file = Path(path).expanduser()
     if not file.exists():
         raise BeansError(f"file not found: {path}")
     imported, skipped = [], []
     rules = led.import_rules()  # fetched once, matched per row
+    classifier = None
+    if learn:
+        from beans.classify import Classifier
+        classifier = Classifier(led, account)
     # Count-aware dedupe: the ledger's existing per-key counts, plus a
     # running tally of keys seen so far in this file. A row is a duplicate
     # only once the running count catches up to what the ledger holds, so
@@ -65,16 +78,8 @@ def import_csv(
     seen: Counter = Counter()
     with file.open(newline="") as handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            raise BeansError(f"{path} is empty or has no header row")
-        fields = {f.strip().lower(): f for f in reader.fieldnames}
-        for col, required in ((date_col, True), (amount_col, True),
-                              (desc_col, False)):
-            if required and col.lower() not in fields:
-                raise BeansError(
-                    f"column {col!r} not found in {path} "
-                    f"(columns: {', '.join(reader.fieldnames)})"
-                )
+        fields = resolve_columns(reader.fieldnames, path,
+                                 required=[date_col, amount_col])
         for lineno, row in enumerate(reader, start=2):
             raw_date = (row.get(fields[date_col.lower()]) or "").strip()
             raw_amount = (row.get(fields.get(amount_col.lower(), "")) or "").strip()
@@ -97,6 +102,10 @@ def import_csv(
                     raise BeansError(f"{path}:{lineno}: {exc}")
             if counter is None and desc:
                 counter = led.match_import_rule(desc, rules)
+            if counter is None and classifier is not None and desc:
+                found = classifier.suggest(desc)
+                if found.account:
+                    counter = led.find_account(found.account)
             if counter is None:
                 counter = default_category
             if counter is None:

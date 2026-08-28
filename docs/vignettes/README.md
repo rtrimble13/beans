@@ -33,7 +33,8 @@ whichever job you have in front of you.
 
 3. **[Import & reconcile](03-import-and-reconcile.md)** — Import a bank CSV,
    auto-categorize transactions with rules, safely re-import overlapping
-   exports, clear postings against a statement, reconcile to the cent, and lock
+   exports, clear postings against a statement, reconcile to the cent, match a
+   statement line by line to find the transaction behind a difference, and lock
    the period.
 
 4. **[Recurring, goals & investing](04-recurring-goals-investing.md)** —

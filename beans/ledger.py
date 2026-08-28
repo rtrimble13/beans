@@ -1108,6 +1108,33 @@ class Ledger:
             for r in self.db.execute(sql, params)
         ]
 
+    def postings_in_range(self, account: Account, start: date,
+                          end: date) -> list[dict]:
+        """Every non-void posting on the account between two dates, cleared
+        or not, as plain rows. Statement matching needs the cleared ones
+        too: a posting already ticked off against a statement that no
+        longer contains it is itself a finding."""
+        sql = (
+            "SELECT t.id AS txn_id, t.date, t.description, t.payee, "
+            "p.amount, p.cleared FROM postings p "
+            "JOIN transactions t ON t.id = p.txn_id "
+            "WHERE t.void = 0 AND p.account_id = ? "
+            "AND t.date >= ? AND t.date <= ? "
+            "ORDER BY t.date, t.id, p.id"
+        )
+        return [
+            {
+                "txn_id": r["txn_id"],
+                "date": date.fromisoformat(r["date"]),
+                "description": r["description"],
+                "payee": r["payee"],
+                "amount": r["amount"],
+                "cleared": bool(r["cleared"]),
+            }
+            for r in self.db.execute(
+                sql, (account.id, start.isoformat(), end.isoformat()))
+        ]
+
     # -- import rules --------------------------------------------------------
 
     def add_import_rule(self, pattern: str, account: Account) -> None:
@@ -1125,9 +1152,19 @@ class Ledger:
             raise BeansError(f"an import rule for {pattern!r} already exists")
 
     def import_rules(self) -> list[tuple[int, str, Account]]:
+        """Saved rules, longest pattern first.
+
+        Order matters: `match_import_rule` takes the first pattern that
+        appears in a description, so the longest — the most specific —
+        has to be tried first. Ordering by insertion instead would let a
+        broad rule added early ("AMAZON") permanently shadow a specific
+        one added later ("AMAZON WEB SERVICES"), silently and with both
+        still listed. Insertion order breaks ties.
+        """
         rows = self.db.execute(
             "SELECT r.id AS rule_id, r.pattern, a.* FROM import_rules r "
-            "JOIN accounts a ON a.id = r.account_id ORDER BY r.id"
+            "JOIN accounts a ON a.id = r.account_id "
+            "ORDER BY LENGTH(r.pattern) DESC, r.id"
         ).fetchall()
         return [(r["rule_id"], r["pattern"], self._row_to_account(r))
                 for r in rows]
@@ -1153,6 +1190,36 @@ class Ledger:
             if pattern.lower() in haystack:
                 return account
         return None
+
+    def counter_account_history(
+        self, account: Account, since: date | None = None
+    ) -> list[tuple[str, str]]:
+        """(description, counter-account name) for every clean two-legged
+        transaction on this account, oldest first.
+
+        Only two-posting transactions are returned: they map one
+        description to exactly one counter-account, which is what the
+        classifier can learn from. A split across three or more accounts
+        has no single answer, so it is left out rather than guessed at.
+        """
+        sql = (
+            "SELECT t.description, t.payee, a.name AS counter "
+            "FROM transactions t "
+            "JOIN postings p ON p.txn_id = t.id AND p.account_id = ? "
+            "JOIN postings o ON o.txn_id = t.id AND o.account_id != ? "
+            "JOIN accounts a ON a.id = o.account_id "
+            "WHERE t.void = 0 "
+            "AND (SELECT COUNT(*) FROM postings x WHERE x.txn_id = t.id) = 2"
+        )
+        params: list = [account.id, account.id]
+        if since:
+            sql += " AND t.date >= ?"
+            params.append(since.isoformat())
+        sql += " ORDER BY t.date, t.id"
+        return [
+            (row["description"] or row["payee"] or "", row["counter"])
+            for row in self.db.execute(sql, params)
+        ]
 
     # -- goals ---------------------------------------------------------------
 

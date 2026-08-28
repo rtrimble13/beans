@@ -22,7 +22,10 @@ personal finance.
 - **Analysis** — savings rate, liquidity runway, debt-to-assets,
   debt-to-income, and expense composition.
 - **Reconciliation** — clear postings against bank statements and reconcile
-  to the cent, the way errors actually get caught.
+  to the cent, the way errors actually get caught. Hand `reconcile` the
+  statement CSV itself and it matches line by line, sorting what doesn't
+  tie into named discrepancy classes — read-only, so it never touches the
+  register.
 - **Investments** — FIFO lots, price history, realized gains on sale, and
   mark-to-market adjustments so the balance sheet carries market value.
 - **Multi-currency** — foreign-denominated accounts with parallel foreign
@@ -35,8 +38,11 @@ personal finance.
 - **Ease of use** — a `beans status` dashboard, `spend` / `earn` / `transfer`
   shortcuts with instant budget feedback, fuzzy account matching
   (`groceries` → `Expenses:Food:Groceries`), full-text search, undo,
-  deduplicating CSV import with auto-categorization rules, shell
-  completions, and `--json` output on every report for scripting.
+  deduplicating CSV import that categorizes itself — `beans categorize`
+  suggests a counter-account for every row of a bank export from your own
+  ledger's history, with a confidence score and the evidence behind it, and
+  writes an editable file for you to review before anything is imported —
+  shell completions, and `--json` output on every report for scripting.
 - **AI assistant (optional)** — an opt-in `beans ai` command group: ask
   questions in plain English (`beans ai ask`) and get a CFO-style narrative
   review of your finances (`beans ai review`). Off by default, read-only,
@@ -293,7 +299,56 @@ beans reconcile Checking --balance 4512.33   # difference -> $0.00
 
 The register shows a `*` next to cleared entries, and a nonzero difference
 with no uncleared postings points straight at a missing or duplicated
-transaction. Once a statement is reconciled, lock it:
+transaction.
+
+### Reconciling line by line
+
+The balance check tells you *that* something is off. To find out *which*
+line, give `reconcile` the statement export itself:
+
+```sh
+beans reconcile Checking --statement may.csv --balance 4512.33
+```
+
+It pairs each statement row against the register and sorts the rest into
+named classes:
+
+```text
+Matched                         28
+  on an exact date              26
+  within the date window         2
+-----------------------------------
+Amount mismatch                  1
+In bank, not in ledger           1
+In ledger, not in bank           1
+Cleared, absent from statement   0
+```
+
+Amounts must match **exactly** — an amount difference is a finding, not
+something to fuzz away — while dates get a ±5 day window and descriptions
+are compared loosely, so `WHOLE FOODS MARKET #412` matches `Whole Foods`.
+That window is what keeps recurring entries quiet: book rent to the 1st
+of the month and a statement line on the 4th (or the 29th of the month
+before) still reads as a match, not a discrepancy. Tune it with
+`--window`, or set `--window 0` to demand exact dates.
+
+This is **read-only** — no transaction is posted, nothing is cleared.
+The one file it can write is the hand-off to `import`:
+
+```sh
+beans reconcile Checking --statement may.csv --unmatched-out new.csv
+$EDITOR new.csv                       # fill in any blank category
+beans import new.csv --account Checking
+```
+
+`new.csv` holds just the in-bank-not-in-ledger rows, in the exact shape
+`import` reads, with the category filled in from your saved rules
+wherever one matched — the blanks are the edit it's asking for. Since
+you're meant to edit it, `reconcile` won't overwrite an existing one
+without `--force`. For credit cards, whose exports usually report a
+purchase as a positive number, add `--invert`.
+
+Once a statement is reconciled, lock it:
 
 ```sh
 beans period close 2026-05-31   # transactions on/before can't change
@@ -481,13 +536,55 @@ re-importing the same file is a no-op, but two genuinely distinct rows that
 share a date and amount (say, two identical coffees on one day) both import
 rather than collapsing into one (disable dedupe entirely with `--no-dedupe`).
 Rows without a category are routed by saved rules before falling back to
-`--category`:
+`--category`. When several rules match, the longest — most specific —
+pattern wins, whatever order you added them in:
 
 ```sh
 beans rule add "WHOLE FOODS" Groceries
 beans rule add "SHELL" Transportation
 beans rule list
 ```
+
+### Letting the ledger categorize for you
+
+Rules only cover merchants you remembered to write a rule for. `categorize`
+covers the rest by reading the answer out of your own register — how you
+categorized this same merchant the last twenty times — and tells you how
+sure it is:
+
+```sh
+beans categorize bank.csv --account Checking             # preview only
+beans categorize bank.csv --account Checking -o prep.csv
+```
+
+```text
+Already set in the file  0
+From an import rule      1
+Inferred from history    1
+Needs a decision         1
+
+Date        Description                   Amount  Account          Conf  Basis
+---------------------------------------------------------------------------------------
+2026-10-20  HARBOR POINT VETERINARY       -88.00  —                0.00  no match
+2026-10-09  BLUE RIDGE DENTAL ASSOC 41   -210.00  Expenses:Health  0.60  3 prior
+2026-10-02  PAYROLL DEPOSIT ACME CORP   3,200.00  Income:Salary    1.00  rule "PAYROLL"
+```
+
+Rows come out **least certain first**, so the ones needing you are at the
+top. The dentist files itself from three prior transactions with no rule
+ever written — and the store number in `...ASSOC 41` doesn't throw it off,
+because merchant matching ignores digits.
+
+Read the `basis`, not just the score: `3 prior` is thin evidence that firms
+up on its own, while `20 prior: 14 Shopping / 6 Cloud` is plenty of evidence
+that *disagrees* — a merchant that genuinely goes two ways. Same score,
+different action. Confidence ranks your attention; it is not a probability,
+and nothing is imported on its strength.
+
+`-o` writes a CSV in exactly the shape `import` reads (the extra columns are
+ignored on import), so the loop is preview → edit the blanks → import.
+Rules still matter for what history can't know: a brand-new merchant, a
+deliberate change of mind, and a fresh ledger with no history at all.
 
 ## Shell completions
 

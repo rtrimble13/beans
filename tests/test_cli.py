@@ -815,3 +815,212 @@ def test_economic_create_template_and_use(capsys, ledger_file, tmp_path):
     code, out, _ = run(capsys, ledger_file, "economic", "npv", "--file", doc)
     assert code == 0
     assert "ECONOMIC NET PRESENT VALUE" in out
+
+
+def _statement(tmp_path, rows, name="stmt.csv"):
+    path = tmp_path / name
+    path.write_text("date,description,amount\n" + "\n".join(rows) + "\n")
+    return str(path)
+
+
+def test_reconcile_needs_a_balance_or_a_statement(capsys, ledger_file):
+    code, _, err = run(capsys, ledger_file, "reconcile", "Checking")
+    assert code != 0
+    assert "--balance" in err and "--statement" in err
+
+
+def test_reconcile_statement_reports_every_class(capsys, ledger_file,
+                                                 tmp_path):
+    run(capsys, ledger_file, "earn", "3200", "Salary", "--date",
+        "2026-05-02", "--desc", "PAYROLL DEPOSIT ACME")
+    # rent booked to the 1st, the way a recurring rule posts it
+    run(capsys, ledger_file, "spend", "1800", "Rent", "--date", "2026-05-01",
+        "--desc", "Rent")
+    run(capsys, ledger_file, "spend", "86.40", "Groceries", "--date",
+        "2026-05-03", "--desc", "Whole Foods")
+    stmt = _statement(tmp_path, [
+        "2026-05-02,PAYROLL DEPOSIT ACME,3200.00",
+        "2026-05-04,RENT ACH SUNRISE,-1800.00",     # drifts off the 1st
+        "2026-05-03,WHOLE FOODS MARKET #412,-86.75",  # 35c out
+        "2026-05-14,CITY POWER & LIGHT,-120.00",    # never recorded
+    ])
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--statement", stmt, "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["summary"] == {"matched": 2, "date_drift": 1,
+                               "amount_mismatch": 1, "bank_only": 1,
+                               "outstanding": 0, "cleared_missing": 0}
+    assert data["date_drift"][0]["drift_days"] == 3
+    assert data["amount_mismatch"][0]["amount_delta"] == "-0.35"
+    assert data["bank_only"][0]["description"] == "CITY POWER & LIGHT"
+
+
+def test_reconcile_statement_leaves_the_ledger_untouched(capsys, ledger_file,
+                                                         tmp_path):
+    run(capsys, ledger_file, "earn", "3200", "Salary", "--date", "2026-05-02")
+    stmt = _statement(tmp_path, ["2026-05-02,PAYROLL,3200.00"])
+    run(capsys, ledger_file, "reconcile", "Checking", "--statement", stmt)
+    # nothing cleared, nothing posted
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--balance", "3200", "--json")
+    assert json.loads(out)["cleared_balance"] == "0.00"
+
+
+def test_reconcile_statement_writes_an_importable_file(capsys, ledger_file,
+                                                       tmp_path):
+    run(capsys, ledger_file, "rule", "add", "CITY POWER",
+        "Housing:Utilities")
+    stmt = _statement(tmp_path, ["2026-05-14,CITY POWER & LIGHT,-120.00"])
+    out_csv = str(tmp_path / "new.csv")
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--statement", stmt, "--unmatched-out", out_csv)
+    assert code == 0
+    assert "Wrote 1 unmatched row(s)" in out
+    code, out, _ = run(capsys, ledger_file, "import", out_csv,
+                       "--account", "Checking")
+    assert code == 0 and "Imported 1" in out
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--statement", stmt, "--json")
+    assert json.loads(out)["summary"]["bank_only"] == 0
+
+
+def test_reconcile_statement_ties_out_the_balance(capsys, ledger_file,
+                                                  tmp_path):
+    run(capsys, ledger_file, "earn", "3200", "Salary", "--date", "2026-05-02")
+    run(capsys, ledger_file, "clear", "Checking", "--through", "2026-05-31")
+    stmt = _statement(tmp_path, ["2026-05-02,PAYROLL,3200.00"])
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--statement", stmt, "--balance", "3200", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["difference"] == "0.00"
+    # the tie-out date defaults to the statement's last row
+    assert data["as_of"] == "2026-05-02"
+
+
+def test_reconcile_statement_inverts_card_exports(capsys, ledger_file,
+                                                  tmp_path):
+    run(capsys, ledger_file, "spend", "48.10", "Transportation", "--from",
+        "Credit Card", "--date", "2026-05-06", "--desc", "Gas")
+    stmt = _statement(tmp_path, ["2026-05-06,SHELL OIL 57422,48.10"])
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Credit Card",
+                       "--statement", stmt, "--json")
+    assert json.loads(out)["summary"]["matched"] == 0
+    code, out, _ = run(capsys, ledger_file, "reconcile", "Credit Card",
+                       "--statement", stmt, "--invert", "--json")
+    assert json.loads(out)["summary"]["matched"] == 1
+
+
+def test_reconcile_rejects_statement_only_flags_without_a_statement(
+        capsys, ledger_file, tmp_path):
+    code, _, err = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--balance", "100", "--unmatched-out",
+                       str(tmp_path / "x.csv"))
+    assert code != 0
+    assert "only applies with --statement" in err
+    assert not (tmp_path / "x.csv").exists()
+
+
+def test_reconcile_will_not_clobber_an_edited_unmatched_file(
+        capsys, ledger_file, tmp_path):
+    stmt = _statement(tmp_path, ["2026-05-14,CITY POWER & LIGHT,-120.00"])
+    out_csv = tmp_path / "new.csv"
+    run(capsys, ledger_file, "reconcile", "Checking", "--statement", stmt,
+        "--unmatched-out", str(out_csv))
+    code, _, err = run(capsys, ledger_file, "reconcile", "Checking",
+                       "--statement", stmt, "--unmatched-out", str(out_csv))
+    assert code != 0 and "--force" in err
+    code, _, _ = run(capsys, ledger_file, "reconcile", "Checking",
+                     "--statement", stmt, "--unmatched-out", str(out_csv),
+                     "--force")
+    assert code == 0
+
+
+def _teach(capsys, ledger_file, desc, category, times, month=1):
+    for i in range(times):
+        run(capsys, ledger_file, "spend", "10.00", category,
+            "--date", f"2026-{month:02d}-{(i % 27) + 1:02d}", "--desc", desc)
+
+
+def test_categorize_previews_without_writing_anything(capsys, ledger_file,
+                                                      tmp_path):
+    _teach(capsys, ledger_file, "WHOLE FOODS MARKET #412", "Groceries", 12)
+    csv_file = tmp_path / "july.csv"
+    csv_file.write_text("date,description,amount\n"
+                        "2026-07-01,WHOLE FOODS MARKET #781,-86.40\n"
+                        "2026-07-02,TOTALLY NEW VENDOR,-31.00\n")
+    code, out, _ = run(capsys, ledger_file, "categorize", str(csv_file),
+                       "--account", "Checking", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["summary"] == {"rows": 2, "column": 0, "rule": 0,
+                               "history": 1, "unresolved": 1}
+    assert data["history_size"] == 12
+    known = [r for r in data["rows"] if r["source"] == "history"][0]
+    assert known["category"] == "Expenses:Food:Groceries"
+    assert known["basis"] == "12 prior"
+    # nothing written, no ledger change
+    assert not (tmp_path / "prepared.csv").exists()
+
+
+def test_categorize_writes_an_importable_file(capsys, ledger_file, tmp_path):
+    _teach(capsys, ledger_file, "WHOLE FOODS MARKET #412", "Groceries", 12)
+    csv_file = tmp_path / "july.csv"
+    csv_file.write_text("date,description,amount\n"
+                        "2026-07-01,WHOLE FOODS MARKET #781,-86.40\n")
+    out_csv = str(tmp_path / "prepared.csv")
+    code, out, _ = run(capsys, ledger_file, "categorize", str(csv_file),
+                       "--account", "Checking", "-o", out_csv)
+    assert code == 0 and "Wrote 1 row(s)" in out
+    code, out, _ = run(capsys, ledger_file, "import", out_csv,
+                       "--account", "Checking")
+    assert code == 0 and "Imported 1" in out
+
+
+def test_categorize_will_not_clobber_an_edited_file(capsys, ledger_file,
+                                                    tmp_path):
+    csv_file = tmp_path / "july.csv"
+    csv_file.write_text("date,description,amount\n"
+                        "2026-07-01,MYSTERY LLC,-31.00\n")
+    out_csv = str(tmp_path / "prepared.csv")
+    run(capsys, ledger_file, "categorize", str(csv_file), "--account",
+        "Checking", "-o", out_csv)
+    code, _, err = run(capsys, ledger_file, "categorize", str(csv_file),
+                       "--account", "Checking", "-o", out_csv)
+    assert code != 0 and "--force" in err
+
+
+def test_import_does_not_infer_from_history_unless_asked(capsys, ledger_file,
+                                                         tmp_path):
+    """`import` writes, so inference there is opt-in: an unreviewed guess
+    in the ledger is the mistake you find a month later."""
+    _teach(capsys, ledger_file, "WHOLE FOODS MARKET #412", "Groceries", 12)
+    csv_file = tmp_path / "july.csv"
+    csv_file.write_text("date,description,amount\n"
+                        "2026-07-01,WHOLE FOODS MARKET #781,-86.40\n")
+    code, _, err = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking")
+    assert code != 0 and "no import rule" in err
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking", "--learn", "--dry-run")
+    assert code == 0 and "Expenses:Food:Groceries" in out
+
+
+def test_rule_matching_prefers_the_most_specific_pattern(capsys, ledger_file,
+                                                         tmp_path):
+    """A broad rule added first must not shadow a specific one added
+    later — it used to, silently, with both still listed."""
+    run(capsys, ledger_file, "account", "add", "Expenses:Cloud",
+        "--type", "expense")
+    run(capsys, ledger_file, "rule", "add", "AMAZON", "Shopping")
+    run(capsys, ledger_file, "rule", "add", "AMAZON WEB SERVICES", "Cloud")
+    csv_file = tmp_path / "bank.csv"
+    csv_file.write_text("date,description,amount\n"
+                        "2026-07-01,AMAZON WEB SERVICES BILL,-42.00\n"
+                        "2026-07-02,AMAZON MARKETPLACE,-19.99\n")
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking", "--dry-run")
+    assert code == 0
+    assert "Expenses:Cloud" in out        # the specific rule wins
+    assert "Expenses:Shopping" in out     # the broad one still works
