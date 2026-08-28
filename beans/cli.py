@@ -14,6 +14,7 @@ from beans import __version__
 from beans import (
     analysis,
     budget,
+    classify,
     completions,
     economic,
     export,
@@ -718,6 +719,7 @@ def cmd_import(args) -> int:
         date_col=args.date_col, desc_col=args.desc_col,
         amount_col=args.amount_col, category_col=args.category_col,
         dry_run=args.dry_run, dedupe=not args.no_dedupe,
+        learn=args.learn,
     )
     rows, skipped = result["imported"], result["skipped"]
     verb = "Would import" if args.dry_run else "Imported"
@@ -733,6 +735,28 @@ def cmd_import(args) -> int:
             table.add(row["date"], row["description"][:40], row["counter"],
                       money(row["amount"], led.decimals))
         print(table.render())
+    return 0
+
+
+def cmd_categorize(args) -> int:
+    """Suggest a counter-account for every row of a bank export and say
+    how sure it is. Read-only: the ledger is never touched, and the only
+    thing written is the optional -o file."""
+    led = _open(args)
+    account = led.find_account(args.account)
+    rows = matching.read_statement(
+        args.csvfile, led.decimals, date_col=args.date_col,
+        desc_col=args.desc_col, amount_col=args.amount_col,
+        category_col=args.category_col, invert=args.invert,
+    )
+    since = parse_date(args.since) if args.since else None
+    classifier = classify.Classifier(led, account, since=since)
+    if args.output:
+        classify.write_prepared_csv(led, classifier, rows, args.output,
+                                    force=args.force)
+    data = classify.categorize_report(led, account, classifier, rows,
+                                      args.csvfile, out_path=args.output)
+    _emit(args, led, data, classify.render_categorize)
     return 0
 
 
@@ -1787,7 +1811,36 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-dedupe", action="store_true",
                    help="import rows even if a matching transaction "
                         "(same date, account, amount) already exists")
+    p.add_argument("--learn", action="store_true",
+                   help="fall back to how you categorized the same merchant "
+                        "before, for rows no column or rule resolves; "
+                        "prefer `beans categorize` to review first")
     p.set_defaults(func=cmd_import)
+
+    p = sub.add_parser(
+        "categorize",
+        help="suggest a counter-account for each row of a bank export",
+        epilog="Example: beans categorize bank.csv --account Checking "
+               "-o prepared.csv",
+    )
+    p.add_argument("csvfile")
+    p.add_argument("--account", "-a", required=True,
+                   help="target account (e.g. the bank account exported)")
+    p.add_argument("--output", "-o", metavar="PATH",
+                   help="write the suggestions as an editable CSV ready "
+                        "for `beans import` (default: preview only)")
+    p.add_argument("--since", metavar="DATE",
+                   help="only learn from transactions on or after DATE, "
+                        "e.g. after reorganizing your chart of accounts")
+    p.add_argument("--invert", action="store_true",
+                   help="flip the sign of every amount, for card exports "
+                        "that report a purchase as positive")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite an existing -o file")
+    _add_csv_column_args(p)
+    p.add_argument("--category-col", default="category")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_categorize)
 
     p = sub.add_parser("config", help="get or set ledger configuration")
     p.add_argument("action", choices=["get", "set", "list"])

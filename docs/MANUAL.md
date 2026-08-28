@@ -27,6 +27,7 @@ shape of the tool and want the details on a specific command.
 13. [`analyze` — ratios and analysis](#analyze--ratios-and-analysis)
 14. [`economic` — economic balance sheet](#economic--economic-balance-sheet)
 15. [`import` — CSV import](#import--csv-import)
+15. [`categorize` — suggest accounts for a bank export](#categorize--suggest-accounts-for-a-bank-export)
 15. [`rule` — auto-categorization rules](#rule--auto-categorization-rules)
 16. [`config` — ledger configuration](#config--ledger-configuration)
 17. [`status` — dashboard](#status--dashboard)
@@ -895,7 +896,7 @@ overrides the `auto` estimate.
 ```
 beans import CSVFILE --account ACCOUNT [--category ACCOUNT]
              [--date-col NAME] [--desc-col NAME] [--amount-col NAME]
-             [--category-col NAME] [--dry-run] [--no-dedupe]
+             [--category-col NAME] [--dry-run] [--no-dedupe] [--learn]
 ```
 
 | Flag | Description |
@@ -909,9 +910,19 @@ beans import CSVFILE --account ACCOUNT [--category ACCOUNT]
 | `--category-col NAME` | Category column name. Default: `category`. |
 | `--dry-run` | Parse and report without writing anything. |
 | `--no-dedupe` | Import rows even if a matching transaction (same date, account, amount) already exists. |
+| `--learn` | For rows no column or rule resolves, fall back to how you categorized the same merchant before. Off by default — see below. |
 
-Rows without a category are routed through saved [import rules](#rule--auto-categorization-rules)
-before falling back to `--category`.
+The counter-account is resolved in order: **the row's category column**,
+then a saved [import rule](#rule--auto-categorization-rules), then — only
+with `--learn` — **the ledger's own history** for that merchant, and
+finally `--category`.
+
+History inference is opt-in here on purpose. `import` writes to the
+ledger, and an inferred account nobody reviewed is exactly the mistake you
+find a month later. The reviewable path is
+[`categorize`](#categorize--suggest-accounts-for-a-bank-export), which
+applies the same classifier and hands you a file to check first; reach for
+`--learn` only when you want the one-step version and accept that.
 
 Deduplication is count-aware: re-importing the same file is a no-op, but
 two genuinely distinct rows sharing a date and amount (e.g. two identical
@@ -925,6 +936,11 @@ coffee purchases in one day) both import rather than collapsing into one.
   recurring merchants before your first real import of a statement — rules
   apply automatically on every future import, so the upfront cost pays off
   immediately at the next statement.
+- Once the ledger has a few months of history, run
+  [`categorize`](#categorize--suggest-accounts-for-a-bank-export) over the
+  export first and import the file it produces. It fills in what your
+  register already knows, so the list of rules you maintain by hand stops
+  growing.
 - Leave deduplication on (the default) for routine re-imports of
   overlapping statement periods; only reach for `--no-dedupe` when you
   specifically know you're re-importing something you intentionally voided
@@ -932,6 +948,126 @@ coffee purchases in one day) both import rather than collapsing into one.
 - Remap columns (`--date-col`, `--amount-col`, etc.) rather than
   hand-editing your bank's export to match `beans`'s defaults — it's less
   error-prone and repeatable for every future export from that bank.
+
+---
+
+## `categorize` — suggest accounts for a bank export
+
+```
+beans categorize CSVFILE --account ACCOUNT [-o PATH] [--since DATE]
+                 [--invert] [--force] [--date-col NAME] [--desc-col NAME]
+                 [--amount-col NAME] [--category-col NAME] [--json]
+```
+
+| Flag | Description |
+|---|---|
+| `CSVFILE` | The bank export to categorize. |
+| `-a, --account ACCOUNT` (required) | Target account the export belongs to. |
+| `-o, --output PATH` | Write the suggestions as an editable CSV ready for `import`. Default: preview only, write nothing. |
+| `--since DATE` | Only learn from transactions on or after DATE — useful after reorganizing your chart of accounts. |
+| `--invert` | Flip the sign of every amount, for card exports that report a purchase as positive. |
+| `--force` | Overwrite an existing `-o` file. |
+| `--date-col`, `--desc-col`, `--amount-col`, `--category-col` | Remap the export's column names (same flags as `import`). |
+| `--json` | Machine-readable output. |
+
+A bank export carries a date, a description and an amount — never a beans
+account name. `categorize` supplies that name for every row and says how
+sure it is, **writing nothing to the ledger**. The only thing it can write
+is the optional `-o` file, which is a draft for you to edit.
+
+```sh
+beans categorize bank.csv --account Checking            # preview
+beans categorize bank.csv --account Checking -o prep.csv
+$EDITOR prep.csv                                        # fill the blanks
+beans import prep.csv --account Checking
+```
+
+### Where the answer comes from
+
+Three sources, in order of how much they know:
+
+| Source | Confidence | Meaning |
+|---|---|---|
+| **column** | 1.00 | The row already had a category. A decision already made, never second-guessed. |
+| **rule** | 1.00 | A saved [import rule](#rule--auto-categorization-rules) matched. Standing intent, so it beats inference. |
+| **history** | computed | How you categorized this same merchant before, read out of the register. |
+| *(none)* | 0.00 | Nothing resolved it — this row needs you. |
+
+History is what makes rules optional rather than mandatory: a rule is a
+hand-maintained cache of a decision your books already record. It only
+works once there *is* history, though, so rules still carry a new ledger
+and still express intent history cannot know yet.
+
+Merchants are matched with digits removed — `BLUE RIDGE DENTAL ASSOC 41`
+and `BLUE RIDGE DENTAL ASSOC` are one merchant — because store and
+reference numbers would otherwise fragment one shop across dozens of
+buckets. Only clean two-posting transactions are learned from; a split
+across three or more accounts has no single answer, so it is left out
+rather than guessed at.
+
+### Reading confidence — and the `basis` column
+
+Confidence rises with the weight of the evidence and falls when the
+evidence disagrees. **Read the `basis` column, not just the score**, because
+one number hides an important distinction:
+
+```
+AMAZON MKTPLACE 442   Expenses:Shopping  0.64  20 prior: 14 Shopping / 6 Cloud
+UNITED AIRLINES 900   Expenses:Travel    0.60  3 prior
+```
+
+Those score alike for opposite reasons. The first has plenty of evidence
+that *disagrees* — a merchant that genuinely goes two ways, which no
+amount of extra history will settle. The second has barely any evidence
+yet, and will firm up on its own. Same number, different action; the basis
+is what tells them apart, which is why both are always emitted.
+
+The report lists rows **least certain first**, so it is meant to be read
+from the top and abandoned once the rows stop being interesting.
+
+> **Confidence is a ranking heuristic, not a calibrated probability.** It
+> sorts your attention. There is deliberately no auto-accept threshold:
+> the point of producing a file is that a person reads it before the
+> ledger does.
+
+### The output file
+
+```
+date,description,amount,category,confidence,basis
+2026-07-01,WHOLE FOODS MARKET #781,-86.40,Expenses:Food:Groceries,0.91,20 prior
+2026-07-05,TOTALLY NEW MERCHANT LLC,-31.00,,0.00,no match
+```
+
+`import` ignores columns it doesn't recognize, so `confidence` and `basis`
+ride along for you to read and need no stripping before use. Amounts are
+written in import convention (positive = money into the account), already
+un-inverted if you read the export with `--invert`.
+
+The file is **re-runnable**: running `categorize` over its own output keeps
+every category already filled in and only fills the blanks. Because it is
+meant to be edited between being written and being imported, an existing
+one is not overwritten without `--force`.
+
+The same classifier fills in
+[`reconcile --unmatched-out`](#clear--reconcile--bank-reconciliation), so a
+row prepared by either route gets the same answer and the same stated
+confidence.
+
+### Best practices
+
+- Preview first (no `-o`), then write the file once you're happy with the
+  column mapping and the sign convention.
+- Work the list from the top. Everything at 1.00 was decided by you or by
+  a rule; the rows that need judgement are the ones sorted to the front.
+- When a merchant keeps coming back with low confidence *because its
+  evidence disagrees*, that's a merchant that genuinely goes two ways —
+  no rule will fix it, and it needs deciding every time. When it's low
+  because the evidence is thin, just categorize it again and it settles
+  itself.
+- Add a rule only for what history can't know: a brand-new merchant whose
+  account you already know, or a deliberate change of mind going forward.
+- Use `--since` after reorganizing your chart of accounts, so the
+  classifier doesn't keep proposing accounts you've retired.
 
 ---
 
@@ -950,6 +1086,11 @@ Routes future CSV-imported rows whose description contains `PATTERN`
 beans rule add "WHOLE FOODS" Groceries
 beans rule add "SHELL" Transportation
 ```
+
+When several rules match one description, **the longest pattern wins** —
+the most specific rule, regardless of the order you added them. So
+`"AMAZON WEB SERVICES" -> Cloud` correctly beats a broader
+`"AMAZON" -> Shopping` even though the broad one was added first.
 
 ### `rule list`
 
@@ -973,6 +1114,12 @@ beans rule remove PATTERN
   "shell" in its name), but no more specific than that — over-specific
   patterns break the moment a merchant's statement descriptor changes
   slightly.
+- Reserve rules for what history can't infer: a brand-new merchant whose
+  account you already know, and deliberate changes of mind ("from now on,
+  Amazon is Shopping"). Rules are prescriptive and always beat inference;
+  for merchants you've already categorized a few times,
+  [`categorize`](#categorize--suggest-accounts-for-a-bank-export) reads the
+  answer out of the register and no rule is needed.
 
 ---
 

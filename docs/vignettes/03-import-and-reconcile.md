@@ -7,8 +7,10 @@ the cent — first on the balance, then line by line, so a difference names the
 transaction that caused it — and lock the period so it can't drift.
 
 **Prerequisites:** [Getting started](01-getting-started.md). A bank CSV export —
-we provide two samples, [`sample-bank.csv`](sample-bank.csv) and
-[`sample-bank-june.csv`](sample-bank-june.csv), so every step here is
+we provide four samples — [`sample-bank.csv`](sample-bank.csv),
+[`sample-bank-june.csv`](sample-bank-june.csv),
+[`sample-bank-july.csv`](sample-bank-july.csv) and
+[`sample-bank-october.csv`](sample-bank-october.csv) — so every step here is
 runnable as written. The commands below reference them by their
 repo-root-relative path (`docs/vignettes/sample-bank.csv`), so run them from the
 repository root — or substitute the path to wherever you saved the files.
@@ -320,12 +322,18 @@ reads — and the category is already filled in, because the `CITY POWER` rule
 from step 1 matched:
 
 ```text
-date,description,amount,category
-2026-06-15,CITY POWER & LIGHT,-118.40,Expenses:Housing:Utilities
+date,description,amount,category,confidence,basis
+2026-06-15,CITY POWER & LIGHT,-118.40,Expenses:Housing:Utilities,1.00,"rule ""CITY POWER"""
 ```
 
-Rows that *don't* match a rule come out with a blank category — those blanks
-are the edit the file is asking for. Fill them in, then import as-is:
+The `confidence` and `basis` columns say *how* each account was arrived at —
+here, a rule, so there's nothing to second-guess. Rows resolved from your
+ledger's history carry a score and the evidence behind it instead, and rows
+nothing could resolve come out blank. `import` ignores columns it doesn't
+know, so the file needs no cleaning up. Step 8 applies the same machinery
+to a whole export.
+
+Fill in any blanks, then import as-is:
 
 ```sh
 beans import june-new.csv --account Checking
@@ -391,14 +399,98 @@ beans: error: cannot void a transaction dated 2026-05-03: the books are closed t
 
 Need to amend a closed period later? `beans period reopen` lifts the lock.
 
+## 8. Let the ledger do the categorizing
+
+Rules got you started, but every new merchant needs one — and you have to
+notice. `beans categorize` closes that loop by reading the answer out of your
+own register: it suggests a counter-account for every row and says how sure it
+is, writing nothing.
+
+July's export brings a merchant no rule covers,
+[`sample-bank-july.csv`](sample-bank-july.csv):
+
+```sh
+beans categorize docs/vignettes/sample-bank-july.csv --account Checking \
+    -o july-prep.csv
+```
+
+```text
+Already set in the file  0
+From an import rule      4
+Inferred from history    0
+Needs a decision         1
+
+Date        Description                  Amount  Account                     Conf  Basis
+-----------------------------------------------------------------------------------------------------
+2026-07-18  BLUE RIDGE DENTAL ASSOC     -140.00  —                           0.00  no match
+2026-07-02  PAYROLL DEPOSIT ACME CORP  3,200.00  Income:Salary               1.00  rule "PAYROLL"
+2026-07-03  WHOLE FOODS MARKET #412      -79.15  Expenses:Food:Groceries     1.00  rule "WHOLE FOODS"
+2026-07-06  SHELL OIL 57422              -51.20  Expenses:Transportation     1.00  rule "SHELL"
+2026-07-11  CITY POWER & LIGHT          -124.80  Expenses:Housing:Utilities  1.00  rule "CITY POWER"
+```
+
+Least certain first, so the row that needs you is at the top — one line to fix
+out of five. Fill in the dentist and import:
+
+```sh
+$EDITOR july-prep.csv          # BLUE RIDGE DENTAL ASSOC -> Expenses:Health
+beans import july-prep.csv --account Checking
+```
+
+Now skip forward. The dentist came back in August and September, and each time
+you categorized it the same way. Here's October — **and no rule was ever
+added**:
+
+```sh
+beans categorize docs/vignettes/sample-bank-october.csv --account Checking
+```
+
+```text
+Learned from 18 prior transaction(s) on this account
+
+Already set in the file  0
+From an import rule      1
+Inferred from history    1
+Needs a decision         1
+
+Date        Description                   Amount  Account          Conf  Basis
+---------------------------------------------------------------------------------------
+2026-10-20  HARBOR POINT VETERINARY       -88.00  —                0.00  no match
+2026-10-09  BLUE RIDGE DENTAL ASSOC 41   -210.00  Expenses:Health  0.60  3 prior
+2026-10-02  PAYROLL DEPOSIT ACME CORP   3,200.00  Income:Salary    1.00  rule "PAYROLL"
+```
+
+The dentist files itself now, from `3 prior` — and the store number in
+`BLUE RIDGE DENTAL ASSOC 41` didn't throw it off, because merchant matching
+ignores digits. A rule would have done the same job, but you'd have had to
+write it; this you got for free by categorizing the transaction once.
+
+**Read the `basis` column, not just the score.** Two rows can score alike for
+opposite reasons: `3 prior` is *thin evidence* that will firm up on its own,
+while `20 prior: 14 Shopping / 6 Cloud` is *plenty of evidence that disagrees*
+— a merchant that genuinely goes two ways, which no amount of history will
+settle for you. The number ranks your attention; the basis tells you what to do
+about it.
+
+Confidence is a ranking heuristic, not a probability, and nothing is ever
+imported on the strength of it. That's the whole point of the file: you read it
+before the ledger does.
+
+> **Still want rules?** Yes — for two things history can't do. A brand-new
+> merchant you already know the answer for, and a deliberate change of mind
+> ("from now on, Amazon is Shopping"). Rules are prescriptive; history is
+> descriptive, so a rule always wins. And on a fresh ledger there's no history
+> at all — which is exactly why step 1 started with rules.
+
 ## What just happened
 
 A bank CSV became categorized, balanced double-entry transactions; a second
 import proved idempotent; a line-by-line pass against the statement turned a
 bare difference into four named findings — and handed the missing row back to
-`import` as an editable file; and a clear-and-reconcile pass tied your ledger to
-the statement to the cent before you sealed it. This is the monthly cadence that
-keeps a ledger honest.
+`import` as an editable file; a clear-and-reconcile pass tied your ledger to the
+statement to the cent before you sealed it; and the ledger started categorizing
+new merchants out of its own history, so the rules you maintain by hand stopped
+growing. This is the monthly cadence that keeps a ledger honest.
 
 ## Next steps
 

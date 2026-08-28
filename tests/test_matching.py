@@ -278,7 +278,8 @@ def test_unmatched_csv_round_trips_through_import(led, tmp_path):
     assert write_unmatched_csv(led, result, out) == 1
 
     text = open(out).read()
-    assert text.splitlines()[0] == "date,description,amount,category"
+    assert text.splitlines()[0] == (
+        "date,description,amount,category,confidence,basis")
     # the rule pre-fills the category; no editing needed for this row
     assert "Expenses:Housing:Utilities" in text
 
@@ -296,8 +297,9 @@ def test_unmatched_csv_leaves_unknown_categories_blank(led, tmp_path):
     result = match_statement(led, checking(led), read_statement(path, 2))
     out = str(tmp_path / "new.csv")
     write_unmatched_csv(led, result, out)
+    # no rule, no history for this merchant: no account, and it says so
     assert open(out).read().splitlines()[1] == \
-        "2026-05-14,MYSTERY CHARGE,-120.00,"
+        "2026-05-14,MYSTERY CHARGE,-120.00,,0.00,no match"
 
 
 def test_unmatched_csv_is_written_in_import_convention(led, tmp_path):
@@ -322,7 +324,8 @@ def test_unmatched_csv_writes_a_header_even_with_no_rows(led, tmp_path):
     result = match_statement(led, checking(led), read_statement(path, 2))
     out = str(tmp_path / "empty.csv")
     assert write_unmatched_csv(led, result, out) == 0
-    assert open(out).read().strip() == "date,description,amount,category"
+    assert open(out).read().strip() == (
+        "date,description,amount,category,confidence,basis")
 
 
 # -- the report --------------------------------------------------------------

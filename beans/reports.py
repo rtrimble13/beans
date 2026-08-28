@@ -45,7 +45,11 @@ NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   # day counts, none of which are money.
                   "line", "rows", "drift_days", "window_days", "matched",
                   "date_drift", "amount_mismatch", "bank_only",
-                  "outstanding", "cleared_missing"}
+                  "outstanding", "cleared_missing",
+                  # categorize: counts by source, and how many prior
+                  # transactions the classifier learned from.
+                  "history_size", "column", "rule", "history",
+                  "unresolved"}
 
 
 def jsonify(value, decimals: int):

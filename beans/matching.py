@@ -90,6 +90,9 @@ class StatementRow:
     date: date
     description: str
     amount: int
+    # Whatever the row already carried in its category column, if any —
+    # a decision already made, which nothing downstream overrides.
+    category: str = ""
 
 
 @dataclass
@@ -185,6 +188,7 @@ def resolve_columns(fieldnames: list[str] | None, path: str,
 def read_statement(path: str, decimals: int, date_col: str = "date",
                    desc_col: str = "description",
                    amount_col: str = "amount",
+                   category_col: str = "category",
                    invert: bool = False) -> list[StatementRow]:
     """Parse a statement export into rows in posting convention.
 
@@ -212,8 +216,12 @@ def read_statement(path: str, decimals: int, date_col: str = "date",
                 raise BeansError(f"{path}:{lineno}: {exc}")
             if amount == 0:
                 continue
-            desc = (raw.get(fields.get(desc_col.lower(), ""), "") or "").strip()
-            rows.append(StatementRow(lineno, when, desc, amount * sign))
+            desc = (raw.get(fields.get(desc_col.lower(), ""), "")
+                    or "").strip()
+            category = (raw.get(fields.get(category_col.lower(), ""), "")
+                        or "").strip()
+            rows.append(StatementRow(lineno, when, desc, amount * sign,
+                                     category))
     if not rows:
         raise BeansError(f"{path} has no data rows")
     return rows
@@ -308,48 +316,20 @@ def match_statement(led: Ledger, account: Account, rows: list[StatementRow],
 
 # -- the editable hand-off file ----------------------------------------------
 
-IMPORT_COLUMNS = ["date", "description", "amount", "category"]
-
-
-def _plain_amount(minor: int, decimals: int) -> str:
-    """Minor units as a bare decimal — no separators, no symbol — so the
-    file stays diff-friendly and reads back through `beans import`."""
-    sign = "-" if minor < 0 else ""
-    whole, frac = divmod(abs(minor), 10**decimals)
-    if not decimals:
-        return f"{sign}{whole}"
-    return f"{sign}{whole}.{frac:0{decimals}d}"
-
 
 def write_unmatched_csv(led: Ledger, result: MatchResult, path: str,
                         force: bool = False) -> int:
     """Write the bank-only rows as a CSV that `beans import` can read.
 
-    Amounts are written in import convention (positive = money into the
-    account), already un-inverted if the statement was read with
-    `--invert`, so the file imports as-is with no extra flags. The
-    `category` column is pre-filled from the saved import rules where one
-    matches and left blank where none does — those blanks are the edit
-    the file is asking for.
+    Delegates the "which account is this?" question to
+    `beans.classify`, the same classifier `beans categorize` uses, so a
+    row prepared by either route gets the same answer and the same
+    stated confidence.
 
     Returns the number of rows written.
     """
-    out = Path(path).expanduser()
-    # This file is meant to be edited between being written and being
-    # imported, so overwriting one silently would throw away that work.
-    if out.exists() and not force:
-        raise BeansError(f"{out} already exists — pass --force to overwrite")
-    rules = led.import_rules()
-    with out.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(IMPORT_COLUMNS)
-        for row in sorted(result.bank_only, key=lambda r: (r.date, r.line)):
-            counter = (led.match_import_rule(row.description, rules)
-                       if row.description else None)
-            writer.writerow([
-                row.date.isoformat(),
-                row.description,
-                _plain_amount(row.amount, led.decimals),
-                counter.name if counter else "",
-            ])
-    return len(result.bank_only)
+    from beans.classify import Classifier, write_prepared_csv
+
+    classifier = Classifier(led, result.account)
+    rows = sorted(result.bank_only, key=lambda r: (r.date, r.line))
+    return write_prepared_csv(led, classifier, rows, path, force=force)
