@@ -1094,22 +1094,130 @@ beans clear Checking --through 2026-05-31
 ### `reconcile`
 
 ```
-beans reconcile ACCOUNT --balance BALANCE [--date DATE] [--json]
+beans reconcile ACCOUNT [--balance BALANCE] [--date DATE] [--json]
+                        [--statement CSV] [--window DAYS] [--invert]
+                        [--unmatched-out PATH] [--force]
+                        [--date-col C] [--desc-col C] [--amount-col C]
 ```
 
 | Flag | Description |
 |---|---|
-| `-b, --balance BALANCE` (required) | The statement's ending balance. |
-| `-d, --date DATE` | Statement date. Default: today. |
+| `-b, --balance BALANCE` | The statement's ending balance. Required unless `--statement` is given. |
+| `-d, --date DATE` | Statement date. Default: today, or the statement's last row with `--statement`. |
+| `-s, --statement CSV` | Statement export to reconcile line by line. |
+| `--window DAYS` | Days either side of a ledger entry in which a same-amount statement line still counts as the same transaction. Default: 5. |
+| `--invert` | Flip the sign of every statement amount, for card exports that report a purchase as positive. |
+| `--unmatched-out PATH` | Write the in-bank-not-in-ledger rows to an editable CSV ready for `beans import`. |
+| `--force` | Overwrite an existing `--unmatched-out` file. |
+| `--date-col`, `--desc-col`, `--amount-col` | Remap the statement's column names (same flags as `import`). |
 | `--json` | Machine-readable output. |
 
-Compares the account's cleared balance against a bank statement's ending
-balance. A nonzero difference with no uncleared postings points straight
-at a missing or duplicated transaction.
+`reconcile` answers the same question at two levels of detail.
+
+**Balance level** — pass `--balance` alone and it compares the account's
+cleared balance against the statement's ending balance. A nonzero
+difference with no uncleared postings points straight at a missing or
+duplicated transaction.
 
 ```sh
 beans reconcile Checking --balance 4512.33
 ```
+
+**Line level** — pass `--statement` and it reads the statement export
+itself and pairs each row off against the register, so you find out
+*which* line is wrong rather than only that something is. Add `--balance`
+as well to get the tie-out and the line detail from one run.
+
+```sh
+beans reconcile Checking --statement may.csv --balance 4512.33
+```
+
+Both are **read-only**: `reconcile` never posts a transaction and never
+marks anything cleared. The only thing it can write is the optional
+`--unmatched-out` file, and that is a draft for you to edit.
+
+#### How rows are matched
+
+The matcher is strict about money and forgiving about dates. **Amounts
+must be equal** for a row and a posting to pair up — in double-entry an
+amount difference is a finding, not a match, so it is never absorbed by
+fuzzy matching. The give is on the two axes where drift is legitimate:
+the posting date (banks settle a day or several after you record an
+entry) and the description (`WHOLE FOODS MARKET #412` and `Whole Foods`
+are the same merchant).
+
+Matching runs in ordered passes, and each pass claims its pairs before
+the next starts, so the same file always produces the same report:
+
+1. equal amount **and** equal date → matched
+2. equal amount, date within `--window` → matched, reported as date drift
+3. similar description, date within `--window`, **different** amount →
+   amount mismatch
+4. anything left over → bank-only or ledger-only
+
+#### The discrepancy classes
+
+| Class | What it means |
+|---|---|
+| **Matched** | Row and posting agree. Split into exact-date and date-drifted, both of which are matches. |
+| **Amount mismatch** | Same payee and date, different amount — usually a typo in the ledger. |
+| **In bank, not in ledger** | On the statement but never recorded. Feed these to `import` (see below). |
+| **In ledger, not in bank** | An outstanding check or a deposit in transit — or a duplicate or typo. `beans` can't tell which; seeing them separately is what lets you. |
+| **Cleared, absent from statement** | Already ticked off against a statement that doesn't contain it. Always worth a look. |
+
+Splits and combines (one ledger entry against two statement lines, or the
+reverse) are deliberately *not* guessed at — they land in the two
+unmatched classes, and the report points it out when their totals agree.
+
+#### Recurring entries and `--window`
+
+If you book recurring transactions to a fixed day — the 1st of the month
+is the common choice — the bank will settle most of them a few days
+either side, including across a month boundary. That is what the date
+window is for: a rent entry dated the 1st matches a statement line on the
+4th, and a June entry dated the 1st matches a 29 May statement line, both
+as **matches** rather than discrepancies. The default of 5 days covers
+both the usual settlement lag and the month boundary. Where several
+entries share an amount, the nearest date wins.
+
+Widen it with `--window 7` if your bank is slow; set `--window 0` to
+require exact dates.
+
+#### The hand-off to `import`
+
+`--unmatched-out` writes the bank-only rows as a CSV in exactly the shape
+`import` reads — `date,description,amount,category` — with the category
+pre-filled from your saved rules wherever one matches and left blank
+where none does. Those blanks are the edit the file is asking for.
+
+```sh
+beans reconcile Checking --statement may.csv --unmatched-out new.csv
+$EDITOR new.csv                      # fill in the blank categories
+beans import new.csv --account Checking
+beans reconcile Checking --statement may.csv --balance 4512.33
+```
+
+Amounts are written in import convention (positive = money into the
+account), already un-inverted if you read the statement with `--invert`,
+so the file imports as-is with no extra flags. Because the file is meant
+to be edited between being written and being imported, `reconcile`
+refuses to overwrite an existing one unless you pass `--force`.
+
+#### Credit cards
+
+Most card exports report a purchase as a **positive** number, the
+opposite of the convention `beans` reads. Pass `--invert` and everything
+— matching, the report, and the generated import file — lines up:
+
+```sh
+beans reconcile "Credit Card" --statement card.csv --invert \
+    --unmatched-out new.csv
+```
+
+> **Foreign-currency accounts.** Statement matching is base-currency only
+> for now; `reconcile --statement` on a foreign-denominated account
+> refuses rather than comparing a foreign statement against base-currency
+> postings.
 
 ### Best practices
 
@@ -1123,6 +1231,13 @@ beans reconcile Checking --balance 4512.33
   postings first (a transaction you haven't cleared yet) before assuming
   something is missing from the ledger entirely — the difference usually
   points at one specific transaction, not a systemic problem.
+- When the difference doesn't resolve by eye, hand `reconcile` the
+  statement export with `--statement`. The balance-level report tells you
+  *that* something is wrong; the line-level one tells you *which* line.
+- Run the line-level pass **before** clearing anything. It is read-only,
+  so it costs nothing, and it is much easier to read against an
+  uncleared register than to unpick a bad `clear --through` sweep
+  afterwards.
 - Run `period close` right after a clean reconciliation (see below) so the
   reconciled period can't accidentally be altered later.
 

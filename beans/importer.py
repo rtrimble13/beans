@@ -22,6 +22,7 @@ from collections import Counter
 from pathlib import Path
 
 from beans.ledger import Ledger
+from beans.matching import resolve_columns
 from beans.models import Account, Posting
 from beans.utils import BeansError, parse_amount, parse_date
 
@@ -65,16 +66,8 @@ def import_csv(
     seen: Counter = Counter()
     with file.open(newline="") as handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            raise BeansError(f"{path} is empty or has no header row")
-        fields = {f.strip().lower(): f for f in reader.fieldnames}
-        for col, required in ((date_col, True), (amount_col, True),
-                              (desc_col, False)):
-            if required and col.lower() not in fields:
-                raise BeansError(
-                    f"column {col!r} not found in {path} "
-                    f"(columns: {', '.join(reader.fieldnames)})"
-                )
+        fields = resolve_columns(reader.fieldnames, path,
+                                 required=[date_col, amount_col])
         for lineno, row in enumerate(reader, start=2):
             raw_date = (row.get(fields[date_col.lower()]) or "").strip()
             raw_amount = (row.get(fields.get(amount_col.lower(), "")) or "").strip()

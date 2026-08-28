@@ -1108,6 +1108,33 @@ class Ledger:
             for r in self.db.execute(sql, params)
         ]
 
+    def postings_in_range(self, account: Account, start: date,
+                          end: date) -> list[dict]:
+        """Every non-void posting on the account between two dates, cleared
+        or not, as plain rows. Statement matching needs the cleared ones
+        too: a posting already ticked off against a statement that no
+        longer contains it is itself a finding."""
+        sql = (
+            "SELECT t.id AS txn_id, t.date, t.description, t.payee, "
+            "p.amount, p.cleared FROM postings p "
+            "JOIN transactions t ON t.id = p.txn_id "
+            "WHERE t.void = 0 AND p.account_id = ? "
+            "AND t.date >= ? AND t.date <= ? "
+            "ORDER BY t.date, t.id, p.id"
+        )
+        return [
+            {
+                "txn_id": r["txn_id"],
+                "date": date.fromisoformat(r["date"]),
+                "description": r["description"],
+                "payee": r["payee"],
+                "amount": r["amount"],
+                "cleared": bool(r["cleared"]),
+            }
+            for r in self.db.execute(
+                sql, (account.id, start.isoformat(), end.isoformat()))
+        ]
+
     # -- import rules --------------------------------------------------------
 
     def add_import_rule(self, pattern: str, account: Account) -> None:

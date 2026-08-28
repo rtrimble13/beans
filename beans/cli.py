@@ -22,6 +22,7 @@ from beans import (
     goals,
     invest,
     loans,
+    matching,
     reconcile,
     recurring,
     reports,
@@ -806,10 +807,47 @@ def cmd_clear(args) -> int:
 def cmd_reconcile(args) -> int:
     led = _open(args)
     account = led.find_account(args.account)
-    balance = parse_amount(args.balance, led.decimals)
+    balance = (parse_amount(args.balance, led.decimals)
+               if args.balance else None)
+    if args.statement:
+        return _reconcile_statement(args, led, account, balance)
+    for flag, value in (("--invert", args.invert),
+                        ("--unmatched-out", args.unmatched_out),
+                        ("--force", args.force)):
+        if value:
+            raise BeansError(f"{flag} only applies with --statement")
+    if balance is None:
+        raise BeansError(
+            "reconcile needs --balance (the statement's ending balance), "
+            "--statement (the statement export), or both"
+        )
     as_of = parse_date(args.date, default=date.today())
     data = reconcile.reconcile_report(led, account, balance, as_of)
     _emit(args, led, data, reconcile.render_reconcile)
+    return 0
+
+
+def _reconcile_statement(args, led, account, balance) -> int:
+    """Line-level reconciliation against a statement export. Read-only:
+    the only thing it may write is the optional --unmatched-out CSV, and
+    that is a draft for `beans import`, not a ledger change."""
+    rows = matching.read_statement(
+        args.statement, led.decimals, date_col=args.date_col,
+        desc_col=args.desc_col, amount_col=args.amount_col,
+        invert=args.invert,
+    )
+    result = matching.match_statement(led, account, rows, window=args.window)
+    # Default the tie-out date to the statement's own last row, which is
+    # what the ending balance belongs to.
+    as_of = parse_date(args.date, default=result.end)
+    if args.unmatched_out:
+        matching.write_unmatched_csv(led, result, args.unmatched_out,
+                                     force=args.force)
+    data = reconcile.statement_report(
+        led, account, result, args.statement, balance, as_of,
+        unmatched_file=args.unmatched_out,
+    )
+    _emit(args, led, data, reconcile.render_statement_reconcile)
     return 0
 
 
@@ -1386,6 +1424,15 @@ def _add_period_args(parser: argparse.ArgumentParser) -> None:
                         help="period end (YYYY-MM-DD); defaults to today")
 
 
+def _add_csv_column_args(parser: argparse.ArgumentParser) -> None:
+    """Header remapping, shared by `import` and `reconcile --statement`
+    so one bank's column names work the same in both."""
+    parser.add_argument("--date-col", default="date")
+    parser.add_argument("--desc-col", default="description")
+    parser.add_argument("--amount-col", default="amount",
+                        help="signed amount column; positive = money in")
+
+
 def _add_json_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true",
                         help="output machine-readable JSON")
@@ -1733,10 +1780,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="target account (e.g. the bank account exported)")
     p.add_argument("--category",
                    help="fallback counter-account for uncategorized rows")
-    p.add_argument("--date-col", default="date")
-    p.add_argument("--desc-col", default="description")
-    p.add_argument("--amount-col", default="amount",
-                   help="signed amount column; positive = money in")
+    _add_csv_column_args(p)
     p.add_argument("--category-col", default="category")
     p.add_argument("--dry-run", action="store_true",
                    help="parse and report without writing")
@@ -1777,12 +1821,39 @@ def build_parser() -> argparse.ArgumentParser:
                    help="un-clear instead of clear")
     p.set_defaults(func=cmd_clear)
 
-    p = sub.add_parser("reconcile",
-                       help="compare cleared balance to a bank statement")
+    p = sub.add_parser(
+        "reconcile",
+        help="compare the ledger to a bank statement (balance or line "
+             "by line)",
+        epilog="Examples: beans reconcile Checking --balance 4512.33 | "
+               "beans reconcile Checking --statement may.csv "
+               "--unmatched-out new.csv",
+    )
     p.add_argument("account")
-    p.add_argument("--balance", "-b", required=True,
-                   help="the statement's ending balance")
-    p.add_argument("--date", "-d", help="statement date (default: today)")
+    p.add_argument("--balance", "-b",
+                   help="the statement's ending balance (required unless "
+                        "--statement is given)")
+    p.add_argument("--date", "-d",
+                   help="statement date (default: today, or the statement's "
+                        "last row with --statement)")
+    p.add_argument("--statement", "-s", metavar="CSV",
+                   help="statement export to reconcile line by line; "
+                        "read-only, nothing is cleared or posted")
+    p.add_argument("--window", type=int, default=matching.DEFAULT_WINDOW,
+                   metavar="DAYS",
+                   help="days either side of a ledger entry in which a "
+                        "same-amount statement line still counts as the "
+                        f"same transaction (default: "
+                        f"{matching.DEFAULT_WINDOW})")
+    p.add_argument("--invert", action="store_true",
+                   help="flip the sign of every statement amount, for card "
+                        "exports that report a purchase as positive")
+    p.add_argument("--unmatched-out", metavar="PATH",
+                   help="write the in-bank-not-in-ledger rows to an "
+                        "editable CSV ready for `beans import`")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite an existing --unmatched-out file")
+    _add_csv_column_args(p)
     _add_json_arg(p)
     p.set_defaults(func=cmd_reconcile)
 

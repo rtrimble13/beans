@@ -40,7 +40,12 @@ class Money:
 # Report-dict keys whose integer values are counts, not money.
 NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   "posted_count", "number", "term_months",
-                  "payments_remaining", "work_months", "live_months"}
+                  "payments_remaining", "work_months", "live_months",
+                  # reconcile --statement: row counts, CSV line numbers and
+                  # day counts, none of which are money.
+                  "line", "rows", "drift_days", "window_days", "matched",
+                  "date_drift", "amount_mismatch", "bank_only",
+                  "outstanding", "cleared_missing"}
 
 
 def jsonify(value, decimals: int):
