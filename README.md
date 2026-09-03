@@ -678,6 +678,43 @@ WSL, Claude Desktop on Windows). The focused guide —
 troubleshooting table; the [MCP vignette](docs/vignettes/08-mcp.md) is a
 start-to-finish walkthrough.
 
+## Import statements with Claude (agent skill)
+
+`beans-import` is an [agent skill](https://code.claude.com/docs) for **Claude
+Code**: it teaches Claude the statement-import workflow — inspect the export,
+`categorize`, triage what's uncertain, dry-run, `import`, `reconcile` — and the
+guardrails that go with writing to a financial record.
+
+```sh
+git clone https://github.com/rtrimble13/beans.git
+cd beans && ./scripts/install_skill.sh     # symlinks into ~/.claude/skills
+```
+
+Then, from any directory:
+
+```
+import my November checking statement from ~/statements/november.csv
+```
+
+Claude derives the column mapping and sign convention from the file itself
+(`MM/DD/YYYY` dates and split debit/credit columns are rewritten into a working
+copy — your original is never touched), runs `beans categorize`, and hands you
+a table of only the rows that need a decision, with transfers and refunds
+flagged. It shows a `--dry-run` and waits for your go-ahead before writing
+anything, then reconciles the result against the statement.
+
+It will not use `--learn`, will not skip the dry run, will not invent an
+account name, and will not reopen a closed period. Confidence scores rank your
+attention; there is no auto-accept threshold, in `beans` or in the skill.
+
+Setup, troubleshooting and WSL notes:
+[`docs/claude-skill-setup.md`](docs/claude-skill-setup.md). Start-to-finish
+walkthrough: the [Claude skill vignette](docs/vignettes/09-claude-skill.md).
+
+This is complementary to the MCP server above, and installs separately: the
+**skill writes** (imports statements), the **server reads** (reports and
+analysis).
+
 ## Customization
 
 - `beans -f path/to/ledger.db …` or `export BEANS_LEDGER=…` — keep multiple

@@ -63,6 +63,12 @@ whichever job you have in front of you.
    doctor`, register the server across the WSL/Windows boundary, and use the
    read-only tools and the `review` prompt from the host.
 
+9. **[Importing a statement with Claude](09-claude-skill.md)** — Use the
+   `beans-import` agent skill for Claude Code on a deliberately awkward bank
+   export: derive the column mapping from the file, normalize non-ISO dates and
+   split debit/credit columns, triage what the classifier is unsure about,
+   dry-run, import, and prove the result against the statement to the cent.
+
 ## Conventions used throughout
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured
