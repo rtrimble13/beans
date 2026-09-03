@@ -30,7 +30,7 @@ from beans import (
     restore,
     status,
 )
-from beans.importer import import_csv
+from beans.importer import import_csv, import_report, render_import
 from beans.ledger import Ledger, ledger_path
 from beans.models import RECURRENCE_FREQUENCIES, AccountType, Posting
 from beans.render import Table, bold, money, red
@@ -721,20 +721,9 @@ def cmd_import(args) -> int:
         dry_run=args.dry_run, dedupe=not args.no_dedupe,
         learn=args.learn,
     )
-    rows, skipped = result["imported"], result["skipped"]
-    verb = "Would import" if args.dry_run else "Imported"
-    summary = f"{verb} {len(rows)} transaction(s) into {account.name}"
-    if skipped:
-        summary += (f" ({len(skipped)} duplicate(s) skipped; "
-                    f"pass --no-dedupe to keep them)")
-    print(summary)
-    if args.dry_run:
-        table = Table(headers=["Date", "Description", "Counter-account",
-                               "Amount"], align="lllr")
-        for row in rows:
-            table.add(row["date"], row["description"][:40], row["counter"],
-                      money(row["amount"], led.decimals))
-        print(table.render())
+    data = import_report(account, args.csvfile, result,
+                         dry_run=args.dry_run)
+    _emit(args, led, data, render_import)
     return 0
 
 
@@ -1815,6 +1804,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="fall back to how you categorized the same merchant "
                         "before, for rows no column or rule resolves; "
                         "prefer `beans categorize` to review first")
+    _add_json_arg(p)
     p.set_defaults(func=cmd_import)
 
     p = sub.add_parser(

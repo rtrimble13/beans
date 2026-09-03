@@ -31,6 +31,7 @@ from pathlib import Path
 from beans.ledger import Ledger
 from beans.matching import resolve_columns
 from beans.models import Account, Posting
+from beans.render import Table, money
 from beans.utils import BeansError, parse_amount, parse_date
 
 
@@ -135,3 +136,44 @@ def import_csv(
                 entry["id"] = txn.id
             imported.append(entry)
     return {"imported": imported, "skipped": skipped}
+
+
+# -- the report --------------------------------------------------------------
+
+
+def import_report(account: Account, source: str, result: dict,
+                  dry_run: bool = False) -> dict:
+    """Shape one import run for `--json` and for the text renderer alike, so
+    the two can never disagree about what happened."""
+    imported, skipped = result["imported"], result["skipped"]
+    return {
+        "report": "import",
+        "account": account.name,
+        "source": source,
+        "dry_run": dry_run,
+        "summary": {
+            "rows": len(imported) + len(skipped),
+            "imported": len(imported),
+            "skipped": len(skipped),
+        },
+        "imported": imported,
+        "skipped": skipped,
+    }
+
+
+def render_import(data: dict, decimals: int, symbol: str) -> str:
+    counts = data["summary"]
+    verb = "Would import" if data["dry_run"] else "Imported"
+    summary = (f"{verb} {counts['imported']} transaction(s) into "
+               f"{data['account']}")
+    if counts["skipped"]:
+        summary += (f" ({counts['skipped']} duplicate(s) skipped; "
+                    "pass --no-dedupe to keep them)")
+    if not data["dry_run"]:
+        return summary
+    table = Table(headers=["Date", "Description", "Counter-account",
+                           "Amount"], align="lllr")
+    for row in data["imported"]:
+        table.add(row["date"], row["description"][:40], row["counter"],
+                  money(row["amount"], decimals))
+    return summary + "\n" + table.render()

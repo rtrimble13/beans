@@ -264,6 +264,59 @@ def test_import_csv(capsys, ledger_file, tmp_path):
     assert data["sections"]["asset"]["Assets:Checking"] == "940.00"
 
 
+def test_import_json(capsys, ledger_file, tmp_path):
+    """`import --json` reports what it did in the same shape whether it
+    wrote or only previewed, so an agent driving the import never has to
+    scrape the human text."""
+    capsys.readouterr()          # drop the fixture's `init` output
+    csv_file = tmp_path / "bank.csv"
+    csv_file.write_text(
+        "date,description,amount,category\n"
+        "2026-03-01,Pay,1000.00,Salary\n"
+        "2026-03-02,Food,-50.00,Groceries\n"
+    )
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking", "--dry-run", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["report"] == "import"
+    assert data["account"] == "Assets:Checking"
+    assert data["dry_run"] is True
+    assert data["summary"] == {"rows": 2, "imported": 2, "skipped": 0}
+    # Counts stay integers; amounts become major-unit strings.
+    assert data["imported"][0]["amount"] == "1000.00"
+    assert data["imported"][0]["counter"] == "Income:Salary"
+    assert data["imported"][0]["id"] is None       # nothing written yet
+
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking", "--json")
+    data = json.loads(out)
+    assert data["dry_run"] is False
+    assert data["summary"]["imported"] == 2
+    assert data["imported"][0]["id"] == 1          # the real transaction id
+
+    # Re-importing the same file is a no-op, and says so in the counts.
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking", "--json")
+    data = json.loads(out)
+    assert data["summary"] == {"rows": 2, "imported": 0, "skipped": 2}
+    assert data["imported"] == []
+    assert data["skipped"][0]["description"] == "Pay"
+
+
+def test_import_text_output_unchanged_by_json_flag(capsys, ledger_file,
+                                                   tmp_path):
+    """The default output is the human one; --json is purely additive."""
+    csv_file = tmp_path / "bank.csv"
+    csv_file.write_text("date,description,amount,category\n"
+                        "2026-03-01,Pay,1000.00,Salary\n")
+    code, out, _ = run(capsys, ledger_file, "import", str(csv_file),
+                       "--account", "Checking", "--dry-run")
+    assert code == 0
+    assert "Would import 1 transaction(s) into Assets:Checking" in out
+    assert "Income:Salary" in out                   # the preview table
+
+
 def test_analyze_runs(capsys, ledger_file):
     run(capsys, ledger_file, "earn", "1000", "Salary", "--date", "2026-01-05")
     run(capsys, ledger_file, "spend", "400", "Rent", "--date", "2026-01-06")

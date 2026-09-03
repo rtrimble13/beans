@@ -49,7 +49,11 @@ NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   # categorize: counts by source, and how many prior
                   # transactions the classifier learned from.
                   "history_size", "column", "rule", "history",
-                  "unresolved"}
+                  "unresolved",
+                  # import: row counts in the summary. The top-level
+                  # "imported"/"skipped" keys hold lists, which fall
+                  # through to the recursive branch either way.
+                  "imported", "skipped"}
 
 
 def jsonify(value, decimals: int):
