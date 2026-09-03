@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# beans — never commit ledger data or statement working files. A prepared CSV
+# lists every merchant you paid that month; the .db is the books themselves.
+*.db
+work/
+*-prepared.csv
