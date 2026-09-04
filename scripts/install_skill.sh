@@ -8,13 +8,15 @@
 #                  reconciled. Writes — after you approve a dry run.
 #   beans-report   reads trends across periods and writes a briefing.
 #                  Strictly read-only.
+#   beans-economic builds an economic balance sheet from an interview and
+#                  stress-tests it. Read-only against the ledger.
 #
-# By default both are symlinked into your personal skills directory, so they
-# are available in every directory you run Claude Code from — not just this
-# one — and edits here take effect immediately. Use --copy for a standalone
-# install that does not depend on the repository staying put.
+# By default all of them are symlinked into your personal skills directory, so
+# they are available in every directory you run Claude Code from — not just
+# this one — and edits here take effect immediately. Use --copy for a
+# standalone install that does not depend on the repository staying put.
 #
-#   ./scripts/install_skill.sh                    # both, symlinked
+#   ./scripts/install_skill.sh                    # all of them, symlinked
 #   ./scripts/install_skill.sh beans-report       # just one
 #   ./scripts/install_skill.sh --copy             # copy instead of symlink
 #   ./scripts/install_skill.sh --uninstall        # remove them
@@ -31,10 +33,10 @@ MODE="symlink"
 # The skills this repository ships. `pr-review` and `project-review` are
 # development tooling for the repo itself, not part of the product, so they
 # are deliberately not installed into a user's personal skills directory.
-AVAILABLE=(beans-import beans-report)
+AVAILABLE=(beans-import beans-report beans-economic)
 REQUESTED=()
 
-usage() { sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -131,6 +133,8 @@ for SKILL_NAME in "${REQUESTED[@]}"; do
             echo "    \"import my October checking statement from ~/statements/oct.csv\"" ;;
         beans-report)
             echo "    \"run my monthly financial review — what's been happening?\"" ;;
+        beans-economic)
+            echo "    \"build my economic balance sheet\"" ;;
     esac
 done
 echo "Run /skills inside Claude Code to confirm they are listed."

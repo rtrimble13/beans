@@ -75,6 +75,13 @@ whichever job you have in front of you.
     from a one-off medical bill, catch an insurance payment that quietly
     stopped, and see why a month in progress must never be trended.
 
+11. **[An economic balance sheet with Claude](11-economic-skill.md)** — Use the
+    `beans-economic` agent skill to turn a plan into a document and then find
+    out what it depends on: interview the six forward-looking lines, write a
+    validated config, rank the assumptions by how much they move the answer,
+    learn why an "inert" input is not a robust one, and price the cost of
+    retiring five years earlier.
+
 ## Conventions used throughout
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured

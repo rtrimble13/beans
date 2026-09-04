@@ -1,9 +1,9 @@
 # The beans skills for Claude Code — install & setup
 
-Two [Claude Code](https://claude.com/claude-code) **agent skills** ship with
+Three [Claude Code](https://claude.com/claude-code) **agent skills** ship with
 this repository. A skill is a set of instructions Claude loads when a job
-matches it; both drive the ordinary `beans` CLI, so their figures are the ones
-your own statements show.
+matches it; all of them drive the ordinary `beans` CLI, so their figures are the
+ones your own statements show.
 
 - **`beans-import`** — gets statement activity into your ledger via
   `categorize`, `rule`, `import`, `reconcile`, through a review-first workflow.
@@ -11,6 +11,10 @@ your own statements show.
 - **`beans-report`** — reads what is already there *across periods*: assembles
   a series `beans` does not keep, separates real drift from one-off spikes and
   noise, and writes a short ranked briefing. Strictly read-only.
+- **`beans-economic`** — looks *forward*: interviews you for the assumptions an
+  economic balance sheet needs, writes a validated config document from your
+  answers, and reports what the resulting figure actually depends on. Read-only
+  against the ledger; the only thing it writes is a plan document you approve.
 
 Neither is the same thing as the [MCP server](mcp-setup-wsl.md). All three are
 complementary and can be installed together:
@@ -20,11 +24,14 @@ complementary and can be installed together:
 | **MCP server** (`beans mcp`) | A set of tools Claude can call | Answers questions about one period: statements, budgets, forecasts, ratios | Read-only by default |
 | **`beans-import` skill** | A procedure Claude follows | Gets a bank or card CSV into the ledger, categorized and reconciled | Yes — after you approve a dry run |
 | **`beans-report` skill** | A procedure Claude follows | Reads trends across many periods and briefs you on what changed | Never |
+| **`beans-economic` skill** | A procedure Claude follows | Builds an economic balance sheet from an interview and stress-tests it | Only a config document you approve |
 
-The dividing line: the **server reads** a period on demand, `beans-import`
-**writes** a statement in, and `beans-report` **reads across time**. A question
-about one month is the server's job; a question about the last twelve is
-`beans-report`'s.
+The dividing line is what each one is looking at: the **server reads** a period
+on demand, `beans-import` **writes** a statement in, `beans-report` **reads
+across time**, and `beans-economic` **reads forward** — the only one whose
+inputs are assumptions rather than records. A question about one month is the
+server's job; about the last twelve, `beans-report`'s; about the next twenty
+years, `beans-economic`'s.
 
 ---
 
@@ -51,7 +58,7 @@ From a `beans` checkout:
 ```bash
 git clone https://github.com/rtrimble13/beans.git
 cd beans
-./scripts/install_skill.sh              # both skills
+./scripts/install_skill.sh              # all three skills
 ./scripts/install_skill.sh beans-report # or name just one
 ./scripts/install_skill.sh --list       # what this repo ships
 ```
@@ -89,6 +96,7 @@ The script does no magic. This is all it is:
 mkdir -p ~/.claude/skills
 ln -s "$PWD/.claude/skills/beans-import" ~/.claude/skills/beans-import
 ln -s "$PWD/.claude/skills/beans-report" ~/.claude/skills/beans-report
+ln -s "$PWD/.claude/skills/beans-economic" ~/.claude/skills/beans-economic
 ```
 
 ### Project-scoped instead
@@ -113,8 +121,8 @@ Then, inside Claude Code:
 /skills
 ```
 
-`beans-import` and `beans-report` should both be listed. If either is not, see
-[§5](#5-troubleshooting).
+`beans-import`, `beans-report` and `beans-economic` should all be listed. If
+any is missing, see [§5](#5-troubleshooting).
 
 ---
 
@@ -122,7 +130,8 @@ Then, inside Claude Code:
 
 Just ask. A skill's description is what triggers it, so ordinary phrasing works
 — and phrasing is also how you choose between them: a *file* going in is
-`beans-import`, a question about *time* is `beans-report`.
+`beans-import`, a question about the *past* is `beans-report`, a question about
+the *future* is `beans-economic`.
 
 ### `beans-import`
 
@@ -224,12 +233,65 @@ Also guardrails, not preferences:
 - **Never assert a trend from fewer than six periods** without saying the
   finding is directional, and never from fewer than three at all.
 
+### `beans-economic`
+
+```
+build my economic balance sheet
+```
+```
+can I afford to retire at 60?
+```
+```
+how sensitive is my plan to inflation?
+```
+
+What Claude will do, in order:
+
+1. **Preflight** — resolve the ledger and report the only figures that are not
+   assumptions: accounting net worth, and the income/spending run-rate `auto`
+   would use. It also states the **projection leverage** — thirteen months of
+   history projected twenty-five years forward is 1:23 — and whether that
+   run-rate is drifting, because a flat annuity taken off a moving base is
+   wrong for the whole horizon.
+2. **Interview** — six lines, four of which the ledger cannot help with at all:
+   future income, future spending, pension, inheritance, bequests, other
+   obligations. Anything you do not mention is modelled as zero, and Claude
+   tells you which ones those are before producing a number.
+3. **Build** — writes a `beans economic` config document from your answers,
+   validated by actually running beans against it before the file lands. That
+   document is the audit trail of your assumptions; keep it, and keep more than
+   one for scenarios.
+4. **Stress-test** — re-runs the model across each assumption and reports which
+   one moves the answer most, the point at which economic net worth crosses
+   zero, and which inputs your config has pinned so sweeping them proves
+   nothing.
+5. **Brief** — the figure, its assumptions, the range, and every excluded line.
+
+### What `beans-economic` will not do
+
+- **Never state a figure without its assumptions in the same breath.** On one
+  worked ledger the same books produce anywhere from −$114,890 to +$1,069,480
+  depending on inputs nobody validated. A bare number is the one output shape
+  that misleads.
+- **Never let silence become a modelling choice.** A pension you did not
+  mention is a claim that you have no pension, and it is recorded as one.
+- **Never invent a life fact** — no assumed retirement age, no assumed
+  lifespan, no assumed inheritance.
+- **Never accept an ambiguous rate.** `beans` reads a bare `0.03` as 0.03%, not
+  3%, which roughly doubles future consumption without complaining. Rates must
+  carry a `%`.
+- **Never overwrite an existing plan document**, and never run
+  `beans economic create-template`, which would.
+- **Never write to your ledger.** Forward-looking inputs are assumptions and
+  are deliberately never posted.
+
 ### Keeping working files private
 
-A prepared CSV lists every merchant you paid that month, and a series file lists
-your account totals. Keep both in a directory your version control ignores — the
-beans repo ignores `work/` and `*-prepared.csv` for exactly this reason — and
-keep your ledger out of any repository you push.
+A prepared CSV lists every merchant you paid that month; a series file lists
+your account totals; an economic config document states your retirement date,
+your pension and any inheritance you expect. Keep all three in a directory your
+version control ignores — the beans repo ignores `work/` and `*-prepared.csv`
+for exactly this reason — and keep your ledger out of any repository you push.
 
 ---
 
@@ -267,6 +329,9 @@ have Claude reading around your Windows profile.
 | `beans-report` says most of your window predates the first transaction | Expected on a young ledger. Ask for fewer periods; a trend needs three at minimum and reads reliably from six. |
 | `beans-report` refuses to give category trends | Too much spending is in `Expenses:Other`. Categorize it (`beans categorize`, or the `beans-import` skill) and re-run; totals-level findings are still available meanwhile. |
 | A trend briefing looks wrong for the current month | It excludes the month in progress on purpose — a part-elapsed period is not comparable. See §3. |
+| `beans-economic` refuses a rate like `0.03` | Deliberate. `beans` would read it as 0.03%, not 3%. Write `3%`. |
+| Two economic figures differ and nothing changed | `beans economic bs` with no config and `beans economic create-template` use different growth/inflation defaults (0%/0% vs 1%/2%). Preflight reports both; set them explicitly. |
+| `beans-economic` says a parameter is "inert" | Your config pins that line — a `stream` schedule carries its own growth and end date, so the global setting no longer feeds it. Edit the schedule and compare two documents instead. |
 | `beans: command not found` in Claude's output | `beans` is not on the PATH Claude Code inherits. Check `command -v beans` in the *same shell* you launch `claude` from; if you use a virtualenv, activate it before launching. |
 | Claude is importing into the wrong ledger | The skill reports which ledger it resolved during preflight. Set `BEANS_LEDGER`, or tell Claude the path — it passes `beans -f PATH`. |
 | `invalid date: '10/02/2026'` | Expected: `beans` accepts only `YYYY-MM-DD`. The skill's `normalize_csv.py` rewrites the file; ask Claude to normalize it first. |
@@ -289,6 +354,11 @@ SKILL=~/.claude/skills/beans-report
 python3 $SKILL/scripts/preflight.py --months 12       # exit 1 means a blocker
 python3 $SKILL/scripts/series.py --months 12 -o work/series.json
 python3 $SKILL/scripts/trend.py work/series.json
+
+SKILL=~/.claude/skills/beans-economic
+python3 $SKILL/scripts/preflight.py                    # what is known vs assumed
+python3 $SKILL/scripts/build_config.py answers.json -o plan.md
+python3 $SKILL/scripts/sensitivity.py --file plan.md   # what it depends on
 ```
 
 All of them take `--help`. `preflight.py` is the useful one to run first: it
@@ -323,6 +393,18 @@ tells you whether your ledger can support a trend read at all.
     ├── preflight.py                can this ledger support a trend read?
     ├── series.py                   gather N periods into one series
     └── trend.py                    classify drift / step / one-off / …
+
+.claude/skills/beans-economic/
+├── SKILL.md                        the workflow and its guardrails
+├── references/
+│   ├── interview.md                the six lines, and what to ask for each
+│   ├── config-format.md            the answers schema and document format
+│   └── sensitivity.md              reading the sweeps; the non-monotonic rate
+└── scripts/
+    ├── econ_io.py                  read-only whitelist, the ambiguous-rate guard
+    ├── preflight.py                what is known before anything is assumed
+    ├── build_config.py             answers -> a validated config document
+    └── sensitivity.py              sweeps, sign-flip boundary, scenario diff
 ```
 
 Everything is plain text. Read a `SKILL.md` if you want to know exactly what
@@ -333,5 +415,6 @@ classification and the read-only whitelist that keeps `beans-report` from
 writing.
 
 For start-to-finish walkthroughs with runnable sample data, see the
-[import vignette](vignettes/09-claude-skill.md) and the
-[trend-briefing vignette](vignettes/10-reporting-skill.md).
+[import vignette](vignettes/09-claude-skill.md), the
+[trend-briefing vignette](vignettes/10-reporting-skill.md) and the
+[economic balance sheet vignette](vignettes/11-economic-skill.md).
