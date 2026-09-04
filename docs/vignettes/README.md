@@ -69,6 +69,12 @@ whichever job you have in front of you.
    split debit/credit columns, triage what the classifier is unsure about,
    dry-run, import, and prove the result against the statement to the cent.
 
+10. **[A trend briefing with Claude](10-reporting-skill.md)** — Use the
+    `beans-report` agent skill to read a year of history rather than one month:
+    assemble the series `beans` does not keep, separate a real grocery drift
+    from a one-off medical bill, catch an insurance payment that quietly
+    stopped, and see why a month in progress must never be trended.
+
 ## Conventions used throughout
 
 - Commands are shown in `sh` blocks; the output that follows is real, captured

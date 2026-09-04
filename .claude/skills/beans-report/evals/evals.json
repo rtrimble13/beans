@@ -1,0 +1,134 @@
+{
+  "skill_name": "beans-report",
+  "notes": "This skill's failure mode is not a wrong number — beans computes those correctly — it is a confident wrong story. So every eval asserts the discipline as well as the answer: a right conclusion reached by trending a part-elapsed month, or by calling one bill a trend, is a failure.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "monthly-review-end-to-end",
+      "prompt": "Run my monthly financial review — what's been happening over the last year?",
+      "files": ["fixtures/trending-ledger.db"],
+      "expected_output": "Preflight run first; a 12-month series ending at the last COMPLETE month; findings ranked and capped, each naming its classification, figure and window; the grocery drift identified as drift and the medical bill as a one-off; rent (flat) absent; a caveats line; the advice footer.",
+      "assertions": [
+        "preflight.py is run before any series is gathered",
+        "The window ends at the last complete month — the month in progress is excluded and said to be excluded",
+        "series.py is called once rather than looping report income per month by hand",
+        "The steady grocery increase is called `drift`, with its per-period and total change",
+        "The one-off medical bill is named as a one-off and is NOT presented as a trend",
+        "Rent, which never moved, does not appear as a finding",
+        "Between 3 and 5 findings are presented, ranked",
+        "Every figure quoted appears in the series or trend output — none is computed in prose",
+        "No write command is run",
+        "The briefing ends with 'Not licensed financial advice.'"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "partial-month-must-not-be-trended",
+      "prompt": "Include this month too — I want the latest picture.",
+      "files": ["fixtures/trending-ledger.db"],
+      "expected_output": "The request is honoured only with the partial month explicitly labelled partial everywhere it appears, and with a plain statement that it is not comparable to the complete months. Income for the stub month is NOT reported as a collapse, and the liquidity runway computed over four days is NOT reported as a fall.",
+      "assertions": [
+        "The skill says the current month has not fully elapsed before showing any figure from it",
+        "Every appearance of the partial month is labelled partial, including in tables",
+        "The part-month income is not described as a fall, drop or collapse",
+        "A liquidity or runway figure derived from the partial month is either withheld or labelled as covering N days",
+        "The trend findings themselves are still computed over complete periods only"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "one-off-is-not-a-trend",
+      "prompt": "My spending looks like it's exploding — is it?",
+      "files": ["fixtures/one-off-spike-ledger.db"],
+      "expected_output": "The single large period is identified as a one-off against an otherwise stable series; the honest answer is 'no'. The median and noise band are cited rather than the average, which the spike distorts.",
+      "assertions": [
+        "The answer is that spending is not exploding",
+        "The spike is classified as a one-off and named with its period",
+        "The underlying series is described as stable",
+        "A median or noise band is cited, not just an average",
+        "The skill does not soften the finding into 'a possible upward trend'"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "blocked-by-uncategorized-spending",
+      "prompt": "Which categories are drifting up?",
+      "files": ["fixtures/messy-ledger.db"],
+      "expected_output": "Preflight blocks: most spending sits in Expenses:Other, so category trends measure filing habits, not spending. The skill says so, offers the totals (which remain meaningful), and points at `beans categorize` or the beans-import skill as the fix.",
+      "assertions": [
+        "The uncategorized share is stated as a percentage",
+        "The skill refuses to present per-category findings as reliable",
+        "Totals-level findings are offered instead of nothing",
+        "`beans categorize` or the beans-import skill is named as the remedy",
+        "No category finding is presented without the caveat attached"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "nothing-to-report-is-a-valid-answer",
+      "prompt": "Anything I should worry about this month?",
+      "files": ["fixtures/steady-ledger.db"],
+      "expected_output": "One short paragraph: the window, that nothing clears both the noise and materiality thresholds, the count of real-but-immaterial moves, and any preflight caveat. No manufactured concern.",
+      "assertions": [
+        "The answer is that nothing material changed",
+        "No finding is invented to fill the briefing",
+        "The immaterial count is mentioned as a count, not enumerated",
+        "The window is stated"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "too-little-history",
+      "prompt": "Show me my 12-month spending trends.",
+      "files": ["fixtures/three-month-ledger.db"],
+      "expected_output": "The ledger covers three months. The skill says so, narrows the window rather than trending nine months of structural zeros, and marks anything it does say as directional on three periods.",
+      "assertions": [
+        "The skill notices that most of the requested window predates the first transaction",
+        "Structural zeros are not presented as low spending",
+        "The window is narrowed, or the limitation is stated before any finding",
+        "Findings are explicitly labelled low-confidence / directional",
+        "The skill says how much history it would need for a reliable read"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "single-period-question-hands-off",
+      "prompt": "What did I spend on groceries in August?",
+      "files": ["fixtures/trending-ledger.db"],
+      "expected_output": "A direct answer from a single command. No 12-month series is gathered; the skill notes that trend analysis is available if wanted.",
+      "assertions": [
+        "The question is answered directly from one period's report",
+        "series.py is NOT run for a single-period question",
+        "The skill does not produce a full ranked briefing for this question"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "lapsed-recurring-payment",
+      "prompt": "Anything odd in my recurring spending?",
+      "files": ["fixtures/lapsed-subscription-ledger.db"],
+      "expected_output": "The account that was recurring and has been absent for several periods is surfaced as `stopped`, cross-checked against `beans recur list`, and presented as a question — service ended, payment failed, or rule paused — rather than as a saving.",
+      "assertions": [
+        "The lapsed payment is identified with its prior typical amount and how many periods it has been absent",
+        "It is NOT presented as a welcome reduction in spending",
+        "`beans recur list` is consulted",
+        "The three possible causes are put to the user rather than guessed",
+        "`beans recur resume` (or similar) is proposed as a command for the user to run, not executed"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "read-only-under-pressure",
+      "prompt": "My grocery budget is clearly wrong — just fix it to match what I actually spend.",
+      "files": ["fixtures/trending-ledger.db"],
+      "expected_output": "The recalibration is computed and the exact `beans budget set` command is written out, but not run. The skill says plainly that it does not write to the ledger, and notes that a budget set to today's level on a drifting account will be wrong again within months.",
+      "assertions": [
+        "No `beans budget set` is executed",
+        "The proposed command is shown in full for the user to run",
+        "The amount proposed comes from the trend output, not from prose arithmetic",
+        "The skill states that it is read-only",
+        "Because the account is drifting, the skill notes the recalibration will go stale"
+      ]
+    }
+  ]
+}

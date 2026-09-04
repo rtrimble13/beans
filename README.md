@@ -53,6 +53,11 @@ personal finance.
   the ledger as read-only tools and a `review` prompt to Claude Desktop and
   Claude Code, so Claude can read your finances directly. Local-first,
   read-only by default. See [Use beans from Claude](#use-beans-from-claude-mcp).
+- **Agent skills for Claude Code (optional)** — two packaged workflows:
+  `beans-import` gets a bank CSV into the ledger, categorized and reconciled
+  (it writes, after you approve a dry run); `beans-report` reads trends across
+  periods and writes a ranked briefing (strictly read-only). See
+  [Agent skills for Claude Code](#agent-skills-for-claude-code).
 - **No dependencies** — the core is pure Python standard library and fully
   offline; data lives in a single SQLite file you own. The optional extras add
   the only opt-in surfaces: `[ai]` reaches a model provider (the sole networked
@@ -596,7 +601,24 @@ beans completions zsh  > ~/.zfunc/_beans    # with fpath+=(~/.zfunc)
 Completes commands, subcommands, and account names (via
 `beans account list --names`).
 
-## AI assistant (optional)
+## Using beans with AI
+
+Four ways to point a model at your books, and they are complements rather than
+alternatives. Pick by what you are trying to do:
+
+| You want to… | Use | Needs |
+|---|---|---|
+| ask from a terminal, a script, or a local model, with nothing else installed | **`beans ai`** | `[ai]` extra + a provider key (or a local endpoint) |
+| ask from Claude Desktop, Claude Code, or any other MCP host | **`beans mcp`** | `[mcp]` extra + a host |
+| get a bank statement into the ledger, categorized and reconciled | **`beans-import` skill** | Claude Code |
+| understand what has been happening across months — trends, drift, inferences | **`beans-report` skill** | Claude Code |
+
+The division is worth internalizing: the **server reads** (a period's numbers,
+on demand), the **skills do a job** (a statement in; a briefing out), and
+`beans ai` is the one that needs no other software at all. Everything here is
+opt-in, and neither optional extra adds a third-party dependency.
+
+### AI assistant (optional)
 
 `beans ai` is an opt-in, off-by-default command group — the only part of the
 tool that reaches the network. Install the extra (it adds **no** third-party
@@ -644,7 +666,7 @@ beans ai ask "what's my runway if I lost my job today?"
 See [`docs/MANUAL.md`](docs/MANUAL.md) for the full `ai` reference and the
 [AI assistant vignette](docs/vignettes/07-ai-assistant.md) for a walkthrough.
 
-## Use beans from Claude (MCP)
+### Use beans from Claude (MCP)
 
 `beans mcp` is an opt-in [MCP](https://modelcontextprotocol.io) server — the
 way to let **Claude Desktop** and **Claude Code** read your ledger directly.
@@ -678,19 +700,23 @@ WSL, Claude Desktop on Windows). The focused guide —
 troubleshooting table; the [MCP vignette](docs/vignettes/08-mcp.md) is a
 start-to-finish walkthrough.
 
-## Import statements with Claude (agent skill)
+### Agent skills for Claude Code
 
-`beans-import` is an [agent skill](https://code.claude.com/docs) for **Claude
-Code**: it teaches Claude the statement-import workflow — inspect the export,
-`categorize`, triage what's uncertain, dry-run, `import`, `reconcile` — and the
-guardrails that go with writing to a financial record.
+Two [agent skills](https://code.claude.com/docs) ship with this repository and
+install independently. Both drive the ordinary `beans` CLI, so their figures
+are the ones your statements show.
 
 ```sh
 git clone https://github.com/rtrimble13/beans.git
-cd beans && ./scripts/install_skill.sh     # symlinks into ~/.claude/skills
+cd beans && ./scripts/install_skill.sh     # both, symlinked into ~/.claude/skills
+./scripts/install_skill.sh beans-report    # or just one
 ```
 
-Then, from any directory:
+#### `beans-import` — statements into the ledger
+
+It teaches Claude the statement-import workflow — inspect the export,
+`categorize`, triage what's uncertain, dry-run, `import`, `reconcile` — and the
+guardrails that go with writing to a financial record. From any directory:
 
 ```
 import my November checking statement from ~/statements/november.csv
@@ -711,9 +737,48 @@ Setup, troubleshooting and WSL notes:
 [`docs/claude-skill-setup.md`](docs/claude-skill-setup.md). Start-to-finish
 walkthrough: the [Claude skill vignette](docs/vignettes/09-claude-skill.md).
 
-This is complementary to the MCP server above, and installs separately: the
-**skill writes** (imports statements), the **server reads** (reports and
-analysis).
+#### `beans-report` — trends out of it
+
+`beans-report` is the read-only counterpart. `beans` reports one period at a
+time — every statement except `networth` is a snapshot, and `--compare` reaches
+exactly one period back — so nothing in the tool can answer *"is my grocery
+spend drifting up, and what does that do to my runway?"* This skill assembles
+the series `beans` doesn't keep, and reads it with rules.
+
+```
+run my monthly financial review — what's been happening?
+are my expenses creeping up, or was that just a bad month?
+how has my savings rate moved this year?
+```
+
+It gathers many periods in a single pass, then classifies each account as
+`drift`, `step`, `one-off`, `new`, `stopped` or `stable` using median-based
+statistics, so one vet bill never becomes a trend. Two thresholds gate every
+finding — whether it clears the series' own noise, and whether it is large
+enough to matter against your income — which is what keeps a briefing to four
+lines instead of thirty.
+
+The rules that matter most are the ones about not fooling you:
+
+- **A period in progress is never trended.** On the 4th of the month, that
+  month shows four days of spending and often no salary; run it into a series
+  and it reads as an income collapse that never happened.
+- **A lapsed payment is surfaced, not celebrated.** A recurring charge that
+  stopped is money you may still owe, or a service you stopped getting — never
+  reported as a welcome drop in spending.
+- **Data quality is checked first.** If a quarter of your spending sits in
+  `Expenses:Other`, category trends measure filing habits; the skill says so and
+  offers totals instead.
+- **"Nothing much changed" is a valid answer**, and the correct one for a
+  well-run ledger most months.
+
+It never writes to your ledger. Recommendations — a recalibrated budget, a
+paused rule to resume — are printed as commands for you to run.
+
+Setup and troubleshooting for both skills:
+[`docs/claude-skill-setup.md`](docs/claude-skill-setup.md). Walkthroughs: the
+[import vignette](docs/vignettes/09-claude-skill.md) and the
+[trend-briefing vignette](docs/vignettes/10-reporting-skill.md).
 
 ## Customization
 

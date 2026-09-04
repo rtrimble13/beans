@@ -1,18 +1,30 @@
-# The `beans-import` skill for Claude Code — install & setup
+# The beans skills for Claude Code — install & setup
 
-`beans-import` is a [Claude Code](https://claude.com/claude-code) **agent
-skill**: a set of instructions Claude loads when you ask it to get statement
-activity into your ledger. It drives the ordinary `beans` CLI —
-`categorize`, `rule`, `import`, `reconcile` — through a review-first workflow,
-and it never writes to your ledger without showing you a dry run first.
+Two [Claude Code](https://claude.com/claude-code) **agent skills** ship with
+this repository. A skill is a set of instructions Claude loads when a job
+matches it; both drive the ordinary `beans` CLI, so their figures are the ones
+your own statements show.
 
-It is **not** the same thing as the [MCP server](mcp-setup-wsl.md). The two are
+- **`beans-import`** — gets statement activity into your ledger via
+  `categorize`, `rule`, `import`, `reconcile`, through a review-first workflow.
+  It writes, but never without showing you a dry run first.
+- **`beans-report`** — reads what is already there *across periods*: assembles
+  a series `beans` does not keep, separates real drift from one-off spikes and
+  noise, and writes a short ranked briefing. Strictly read-only.
+
+Neither is the same thing as the [MCP server](mcp-setup-wsl.md). All three are
 complementary and can be installed together:
 
 | | What it is | What it does | Writes? |
 |---|---|---|---|
-| **MCP server** (`beans mcp`) | A set of tools Claude can call | Answers questions about your finances: statements, budgets, forecasts, ratios | Read-only by default |
+| **MCP server** (`beans mcp`) | A set of tools Claude can call | Answers questions about one period: statements, budgets, forecasts, ratios | Read-only by default |
 | **`beans-import` skill** | A procedure Claude follows | Gets a bank or card CSV into the ledger, categorized and reconciled | Yes — after you approve a dry run |
+| **`beans-report` skill** | A procedure Claude follows | Reads trends across many periods and briefs you on what changed | Never |
+
+The dividing line: the **server reads** a period on demand, `beans-import`
+**writes** a statement in, and `beans-report` **reads across time**. A question
+about one month is the server's job; a question about the last twelve is
+`beans-report`'s.
 
 ---
 
@@ -32,17 +44,19 @@ you use WSL (see [§4](#4-wsl-notes)), that means **inside WSL**, and you run
 
 ---
 
-## 1. Install the skill
+## 1. Install the skills
 
 From a `beans` checkout:
 
 ```bash
 git clone https://github.com/rtrimble13/beans.git
 cd beans
-./scripts/install_skill.sh
+./scripts/install_skill.sh              # both skills
+./scripts/install_skill.sh beans-report # or name just one
+./scripts/install_skill.sh --list       # what this repo ships
 ```
 
-That symlinks `.claude/skills/beans-import` into `~/.claude/skills/`, which is
+That symlinks each `.claude/skills/<skill>` into `~/.claude/skills/`, which is
 your **personal** skills directory. Two things follow from that:
 
 - The skill is available in **every** directory you run Claude Code from — not
@@ -74,14 +88,15 @@ The script does no magic. This is all it is:
 ```bash
 mkdir -p ~/.claude/skills
 ln -s "$PWD/.claude/skills/beans-import" ~/.claude/skills/beans-import
+ln -s "$PWD/.claude/skills/beans-report" ~/.claude/skills/beans-report
 ```
 
 ### Project-scoped instead
 
-If you only ever want the skill while working *in* the beans repository, skip
+If you only ever want the skills while working *in* the beans repository, skip
 the install entirely — Claude Code already discovers `.claude/skills/` in the
-current project. This is the right choice for developing the skill and the
-wrong one for using it, since that is not where your statements live.
+current project. This is the right choice for developing them and the wrong one
+for using them, since that is not where your statements or your ledger live.
 
 ---
 
@@ -98,15 +113,18 @@ Then, inside Claude Code:
 /skills
 ```
 
-`beans-import` should be listed. If it is not, see
+`beans-import` and `beans-report` should both be listed. If either is not, see
 [§5](#5-troubleshooting).
 
 ---
 
-## 3. Use it
+## 3. Use them
 
-Just ask. The skill's description is what triggers it, so ordinary phrasing
-works:
+Just ask. A skill's description is what triggers it, so ordinary phrasing works
+— and phrasing is also how you choose between them: a *file* going in is
+`beans-import`, a question about *time* is `beans-report`.
+
+### `beans-import`
 
 ```
 import my October checking statement from ~/statements/oct.csv
@@ -141,7 +159,7 @@ What Claude will do, in order:
 7. **Prove it** — reconcile line by line against the original statement, so
    what got written is checked against what the bank says.
 
-### What it will not do
+### What `beans-import` will not do
 
 These are guardrails written into the skill, not preferences:
 
@@ -156,12 +174,62 @@ These are guardrails written into the skill, not preferences:
 Confidence scores rank your attention; `beans` deliberately has no auto-accept
 threshold, and the skill does not invent one.
 
+### `beans-report`
+
+```
+run my monthly financial review — what's been happening?
+```
+```
+are my expenses creeping up, or was that just a bad month?
+```
+```
+how has my savings rate moved this year, and what's driving it?
+```
+
+What Claude will do, in order:
+
+1. **Preflight** — resolve the ledger, work out today's date and therefore the
+   last *complete* period, check how far your history reaches, and measure how
+   much spending is sitting uncategorized. Blockers are reported before any
+   analysis, not after.
+2. **Gather** — assemble many periods of `report income`, `analyze`, `networth`
+   and `budget report` into one series, in a single pass. The figures are
+   copied verbatim from `beans --json`; nothing is recomputed.
+3. **Classify** — fit each account robustly and label it `drift`, `step`,
+   `one-off`, `new`, `stopped` or `stable`. Median-based statistics throughout,
+   so a single large bill never becomes a trend.
+4. **Infer** — cross the findings against your recurring rules, budgets and
+   goals: subscription creep, a payment that quietly lapsed, a budget that is
+   wrong rather than a month that was bad, what a drift does to a goal date.
+5. **Brief** — three to five ranked findings, each tied to a figure and a
+   window, each with a proposed action, plus the caveats.
+
+### What `beans-report` will not do
+
+Also guardrails, not preferences:
+
+- **Never trend a period that has not fully elapsed.** On the 4th of the month,
+  that month shows four days of spending and often no salary at all. Run it into
+  a twelve-month series and it reads as an income collapse and a runway falling
+  by three quarters — both false. The current period is excluded, and if it is
+  ever shown it is labelled partial every time.
+- **Never write to your ledger.** Not a budget, not a rule, not a period close.
+  Recommendations are printed as commands for you to run.
+- **Never call one bill a trend**, and never report a lapsed recurring payment
+  as a welcome drop in spending.
+- **Never present category trends over a ledger that cannot support them.** If
+  too much spending sits in `Expenses:Other`, it says so and offers totals.
+- **Never manufacture a concern.** "Nothing much changed" is a valid answer, and
+  the right one most months.
+- **Never assert a trend from fewer than six periods** without saying the
+  finding is directional, and never from fewer than three at all.
+
 ### Keeping working files private
 
-A prepared CSV lists every merchant you paid that month. Keep working copies in
-a directory your version control ignores — the beans repo ignores `work/` and
-`*-prepared.csv` for exactly this reason — and keep your ledger out of any
-repository you push.
+A prepared CSV lists every merchant you paid that month, and a series file lists
+your account totals. Keep both in a directory your version control ignores — the
+beans repo ignores `work/` and `*-prepared.csv` for exactly this reason — and
+keep your ledger out of any repository you push.
 
 ---
 
@@ -193,8 +261,12 @@ have Claude reading around your Windows profile.
 
 | Symptom | Cause and fix |
 |---|---|
-| `/skills` does not list `beans-import` | Check `ls -l ~/.claude/skills/beans-import`. A dangling symlink means the checkout moved — re-run the install script, or use `--copy`. Restart Claude Code after installing. |
+| `/skills` does not list a skill | Check `ls -l ~/.claude/skills/`. A dangling symlink means the checkout moved — re-run the install script, or use `--copy`. Restart Claude Code after installing. |
 | Claude answers about importing but does not follow the workflow | The skill did not trigger. Say what you want in terms of the ledger — "import this into beans", "categorize this statement" — rather than asking about the file in the abstract. |
+| Claude answers a trend question from one period | `beans-report` did not trigger. Ask about a span of time — "over the last year", "what's been changing", "run my monthly review" — rather than naming a single month. |
+| `beans-report` says most of your window predates the first transaction | Expected on a young ledger. Ask for fewer periods; a trend needs three at minimum and reads reliably from six. |
+| `beans-report` refuses to give category trends | Too much spending is in `Expenses:Other`. Categorize it (`beans categorize`, or the `beans-import` skill) and re-run; totals-level findings are still available meanwhile. |
+| A trend briefing looks wrong for the current month | It excludes the month in progress on purpose — a part-elapsed period is not comparable. See §3. |
 | `beans: command not found` in Claude's output | `beans` is not on the PATH Claude Code inherits. Check `command -v beans` in the *same shell* you launch `claude` from; if you use a virtualenv, activate it before launching. |
 | Claude is importing into the wrong ledger | The skill reports which ledger it resolved during preflight. Set `BEANS_LEDGER`, or tell Claude the path — it passes `beans -f PATH`. |
 | `invalid date: '10/02/2026'` | Expected: `beans` accepts only `YYYY-MM-DD`. The skill's `normalize_csv.py` rewrites the file; ask Claude to normalize it first. |
@@ -212,11 +284,19 @@ SKILL=~/.claude/skills/beans-import
 python3 $SKILL/scripts/inspect_csv.py statement.csv
 python3 $SKILL/scripts/normalize_csv.py statement.csv -o work/clean.csv
 python3 $SKILL/scripts/triage.py work/prepared.csv
+
+SKILL=~/.claude/skills/beans-report
+python3 $SKILL/scripts/preflight.py --months 12       # exit 1 means a blocker
+python3 $SKILL/scripts/series.py --months 12 -o work/series.json
+python3 $SKILL/scripts/trend.py work/series.json
 ```
+
+All of them take `--help`. `preflight.py` is the useful one to run first: it
+tells you whether your ledger can support a trend read at all.
 
 ---
 
-## 6. What's in the skill
+## 6. What's in the skills
 
 ```
 .claude/skills/beans-import/
@@ -224,16 +304,34 @@ python3 $SKILL/scripts/triage.py work/prepared.csv
 ├── references/
 │   ├── csv-shapes.md               export shapes and the flags each needs
 │   ├── triage-playbook.md          reading confidence vs. basis; the traps
+│   ├── recurring-overlap.md        rules that collide with a statement
 │   └── command-reference.md        exact flags for the commands used
 └── scripts/
     ├── inspect_csv.py              derive the column mapping from a file
     ├── normalize_csv.py            rewrite an export into the shape beans reads
+    ├── recur_match.py              find recurring rules a statement duplicates
     └── triage.py                   group uncertain rows by merchant
+
+.claude/skills/beans-report/
+├── SKILL.md                        the workflow and its guardrails
+├── references/
+│   ├── method.md                   reading a series without lying to yourself
+│   ├── inference-playbook.md       named patterns and what each implies
+│   └── command-reference.md        the read-only report surface
+└── scripts/
+    ├── beans_io.py                 read-only command whitelist, periods, money
+    ├── preflight.py                can this ledger support a trend read?
+    ├── series.py                   gather N periods into one series
+    └── trend.py                    classify drift / step / one-off / …
 ```
 
-Everything is plain text. Read `SKILL.md` if you want to know exactly what
-Claude has been told to do — and edit it if you want it to behave differently.
-The scripts are covered by the project's test suite (`tests/test_skill_scripts.py`).
+Everything is plain text. Read a `SKILL.md` if you want to know exactly what
+Claude has been told to do — and edit it if you want different behaviour. The
+scripts are covered by the project's test suite
+(`tests/test_skill_scripts.py`), including the arithmetic behind every trend
+classification and the read-only whitelist that keeps `beans-report` from
+writing.
 
-For a start-to-finish walkthrough with runnable sample data, see the
-[Claude skill vignette](vignettes/09-claude-skill.md).
+For start-to-finish walkthroughs with runnable sample data, see the
+[import vignette](vignettes/09-claude-skill.md) and the
+[trend-briefing vignette](vignettes/10-reporting-skill.md).
