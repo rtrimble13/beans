@@ -181,6 +181,55 @@ def add_months_clamped(anchor: date, months: int) -> date:
                                                     first.month)[1]))
 
 
+# -- period keys (absolute, grain-aware) -------------------------------------
+#
+# `parse_period` already turns a 'YYYY-MM' or 'YYYY-QN' key into bounds. These
+# three complete the set a multi-period report needs: name the period a date
+# falls in, step from one key to the next, and — the one that matters — say
+# which period was the last to have fully elapsed.
+
+def period_key(when: date, grain: str = "month") -> str:
+    """The absolute period key containing `when`: 'YYYY-MM' or 'YYYY-QN'."""
+    if grain == "quarter":
+        return f"{when.year:04d}-Q{(when.month - 1) // 3 + 1}"
+    return f"{when.year:04d}-{when.month:02d}"
+
+
+def shift_period(key: str, delta: int, grain: str = "month") -> str:
+    """Move a period key by `delta` periods."""
+    if grain == "quarter":
+        year, _, quarter = key.partition("-Q")
+        index = int(year) * 4 + (int(quarter) - 1) + delta
+        return f"{index // 4:04d}-Q{index % 4 + 1}"
+    year, _, month = key.partition("-")
+    index = int(year) * 12 + (int(month) - 1) + delta
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
+
+
+def last_complete_period(today: date, grain: str = "month") -> str:
+    """The most recent period that has fully elapsed as of `today`.
+
+    A period in progress is not comparable to the ones before it: four days
+    into a month, rent has posted and the paycheck has not, so the month
+    reports a loss that reverses on the 15th. Trending that reads as a
+    collapse in income. Reports that span periods therefore stop here, and
+    say so, rather than letting a stub period into the series.
+    """
+    current = period_key(today, grain)
+    _start, end, _label = parse_period(current)
+    return current if today >= end else shift_period(current, -1, grain)
+
+
+def period_months(key: str) -> list[str]:
+    """The 'YYYY-MM' months a period key covers (one, or three)."""
+    start, end, _label = parse_period(key)
+    months, cursor = [], start
+    while cursor <= end:
+        months.append(f"{cursor:%Y-%m}")
+        cursor = add_months(cursor, 1)
+    return months
+
+
 def parse_period(
     period: str | None,
     start: str | None = None,

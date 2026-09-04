@@ -15,6 +15,10 @@ personal finance.
   prior-period comparison), balance sheet (with computed retained earnings),
   and a direct-method statement of cash flows classified into operating,
   investing, and financing activities.
+- **Trends over time** — `report trend` puts income, expenses and every
+  account side by side across N months or quarters, ranked by what moved most,
+  so drift is visible before it is obvious. It stops at the last *complete*
+  period, because a part-elapsed one reads as a collapse.
 - **Budgeting** — per-account budgets at weekly/monthly/quarterly/yearly
   cadence, with budget-vs-actual variance reports over any period.
 - **Forecasting** — project income, expenses, cash, and net worth forward from
@@ -256,6 +260,7 @@ Reports accept `--period` with: `ytd`, `all`, `this-month`, `last-month`,
 beans report income --period 2026-Q1 --compare   # with prior-quarter deltas
 beans report balance --date 2026-03-31
 beans report cashflow --period 2026
+beans report trend --periods 12                  # a series, not a snapshot
 ```
 
 The income statement shows each line as a % of total income (a common-size
@@ -269,6 +274,16 @@ counter-account's activity, and the net change reconciles to beginning and
 ending cash. Transactions that move no cash (e.g. groceries charged to a
 credit card) correctly appear in the income statement but not the cash flow
 statement until the card is paid.
+
+`report trend` is the odd one out, and deliberately so: every other statement
+covers one period, so a question about *drift* — "are groceries creeping up?",
+"how has my savings rate moved?" — had no command. It reports income, expenses,
+net and per-account flows across N months or quarters, ranked by largest
+change, and its window ends at the last **complete** period. That default
+matters: four days into a month, that month has rent posted and no paycheck, so
+including it in a series reads as an income collapse that reverses on the 15th.
+`--include-partial` opts back in, marks the period, and still keeps it out of
+the averages.
 
 Add `--json` to any report for machine-readable output:
 
@@ -643,6 +658,7 @@ Get a CFO-style narrative over your statements and ratios:
 ```sh
 beans ai review                        # this-period briefing
 beans ai review --brief --period ytd   # 3-bullet TL;DR
+beans ai review --focus trend          # add a 12-period series to the bundle
 ```
 
 **Privacy & data flow.** Only the JSON of the read-only commands the assistant
@@ -689,7 +705,8 @@ claude mcp add beans --scope user -- beans-mcp --file ~/.beans/ledger.db
 ```
 
 Then ask Claude about your finances — it calls read-only tools
-(`beans_income_statement`, `beans_analyze`, …) and a `review` prompt, so its
+(`beans_income_statement`, `beans_trend`, `beans_analyze`, …) and a `review`
+prompt, so its
 numbers match your statements exactly. Writes are off unless you pass
 `--allow-writes`, and even then the host approves each call.
 

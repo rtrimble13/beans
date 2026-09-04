@@ -17,12 +17,17 @@ instructions are in [`docs/claude-skill-setup.md`](../claude-skill-setup.md).
 
 ## Why this needs a skill at all
 
-`beans` reports one period at a time. Every statement except `networth` is a
-snapshot, and `--compare` reaches exactly one period back. So the question
-*"are my groceries drifting up, and what does that do to my runway?"* has no
-command — it needs many periods lined up, and it needs reading correctly.
+`beans report trend` will line up the periods for you — that part is a command
+now, and if all you want is the numbers side by side, run it and stop reading.
 
-Here is what "correctly" means. It is 4 September 2026. Ask `beans` about the
+What it cannot do is tell you which of those movements mean anything. A column
+of twelve grocery figures does not say whether it is a drift, one bad month, or
+noise; it does not know that the insurance payment stopping is a problem rather
+than a saving; and it will happily hand you a category series over a ledger
+where a third of the spending is filed under `Expenses:Other`. That reading is
+what this skill does, and it is where the mistakes live.
+
+Here is the flavour of mistake. It is 4 September 2026. Ask `beans` about the
 current month:
 
 ```sh
@@ -58,8 +63,10 @@ twelve-month series and the honest-looking conclusion is *"your income has
 collapsed to zero and your runway has fallen from 18.9 months to 4.7."* Both
 halves are false, and both are the kind of false that ruins someone's evening.
 
-The skill's first rule is that a period which has not fully elapsed is never
-trended. Most of what follows is rules of that shape.
+The first rule — in the skill *and*, since beans 1.1, in `report trend` itself
+— is that a period which has not fully elapsed is never trended. Most of what
+follows is rules of that shape, and the ones that could be moved into the
+product have been.
 
 ## 0. A ledger with a year of history
 
@@ -80,9 +87,60 @@ Inside it: a raise in March, groceries creeping up by about $22 a month under
 ±$18 of noise, a streaming subscription that starts in January, an insurance
 payment that stops after April, one $2,400 medical bill, and flat rent.
 
-Nothing in `beans` will tell you any of that. Try it — `report income
---period 2026-08 --compare` shows August against July, which is two of the
-twelve numbers you need.
+`beans report trend` will show you all twelve months of it:
+
+```sh
+beans report trend --periods 12
+```
+
+```text
+TREND
+Last 12 months: 2025-09 to 2026-08
+2026-09 is still in progress and is excluded.
+
+Period     Income  Expenses       Net  Savings
+----------------------------------------------
+2025-09  6,000.00  2,889.00  3,111.00    51.9%
+2025-10  6,000.00  2,883.00  3,117.00    52.0%
+2025-11  6,000.00  2,890.00  3,110.00    51.8%
+2025-12  6,000.00  2,940.00  3,060.00    51.0%
+2026-01  6,000.00  2,943.00  3,057.00    51.0%
+2026-02  6,000.00  2,953.00  3,047.00    50.8%
+2026-03  6,600.00  5,460.00  1,140.00    17.3%
+2026-04  6,600.00  3,029.00  3,571.00    54.1%
+2026-05  6,600.00  2,957.00  3,643.00    55.2%
+2026-06  6,600.00  2,912.00  3,688.00    55.9%
+2026-07  6,600.00  2,925.00  3,675.00    55.7%
+2026-08  6,600.00  2,977.00  3,623.00    54.9%
+----------------------------------------------
+Average  6,300.00  3,146.50  3,153.50    50.1%
+
+BY ACCOUNT (largest change first)
+Account                        First      Last   Change   Average
+-----------------------------------------------------------------
+Income:Salary               6,000.00  6,600.00   600.00  6,300.00
+Expenses:Food:Groceries       530.00    746.00   216.00    643.00
+Expenses:Insurance            145.00      0.00  -145.00     96.67
+Expenses:Entertainment          0.00     38.00    38.00     25.33
+Expenses:Food:Dining          210.00    187.00   -23.00    199.75
+Expenses:Housing:Utilities    204.00    206.00     2.00    181.75
+Expenses:Health                 0.00      0.00     0.00    200.00
+Expenses:Housing:Rent       1,800.00  1,800.00     0.00  1,800.00
+```
+
+Every number you need is on that page. Now try to read it.
+
+The insurance row shows `-145.00`, which looks like a saving — it is a payment
+that stopped. Groceries `+216.00` and dining `-23.00` are both "changes", but
+one is a twelve-month drift and the other is next month's noise; first-versus-
+last cannot tell them apart, and would have called dining a $23 fall even if
+the middle ten months had been identical. `Expenses:Health` reads **First 0.00,
+Last 0.00, Change 0.00** — and a $200 average, because a $2,400 bill in March
+is sitting inside it, invisible in every column but one. And the March savings
+rate of 17.3% is that same bill, not a lapse in discipline.
+
+That gap — between having the numbers and knowing which of them are news — is
+what the rest of this walkthrough is.
 
 ## 1. Ask
 
@@ -151,15 +209,18 @@ wrote /tmp/series.json — 12 months (2025-09 … 2026-08)
   "report": "beans-report/series",
   "grain": "month",
   "count": 12,
+  "source": "beans report trend",
   "window": {"first": "2025-09", "last": "2026-08"},
   "excluded_partial": "2026-09"
 }
 ```
 
-Underneath, that is twelve `beans report income --period YYYY-MM --json` calls
-plus one `networth` and (with `--ratios`) twelve `beans analyze` — about a
-second, and every figure copied verbatim. The script does **no** arithmetic, so
-any number it emits can be traced back to a command you can re-run.
+Underneath, that is one `beans report trend --json`, one `networth`, and (with
+`--ratios`) twelve `beans analyze` — every figure copied verbatim. The script
+does **no** arithmetic, so any number it emits can be traced back to a command
+you can re-run. The `source` field says where the series came from: on a beans
+older than 1.1 there is no `report trend`, and the script falls back to twelve
+`report income` calls that produce byte-identical output.
 
 Two series it produced:
 
@@ -350,6 +411,10 @@ September and see which conclusion you reach first.
   "last month I flagged rising groceries; they rose another $9."
 - **Fix the inputs.** If preflight blocked on uncategorized spending, the
   [`beans-import` skill](09-claude-skill.md) is how you clear it.
+- **Skip the skill entirely** when you just want the numbers:
+  `beans report trend --periods 12 --json`, or the `beans_trend` tool from any
+  MCP host. `beans ai review --focus trend` puts the same series into a
+  CFO-style briefing without leaving the terminal.
 
 Cleanup:
 

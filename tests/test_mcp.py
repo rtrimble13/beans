@@ -299,3 +299,37 @@ def test_wsl_boundary_smoke():  # pragma: no cover
     """Placeholder for the manual Windows→WSL smoke test; see
     docs/mcp-setup-wsl.md. Skipped by default (needs a real boundary)."""
     pytest.skip("manual boundary test; run with -m boundary on Windows+WSL")
+
+
+def test_trend_tool_is_exposed_and_read_only(ledger):
+    [resp] = drive(MCPServer(ledger),
+                   {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    tools = {t["name"]: t for t in resp["result"]["tools"]}
+    assert "beans_trend" in tools
+    trend = tools["beans_trend"]
+    assert trend["annotations"]["readOnlyHint"] is True
+    properties = trend["inputSchema"]["properties"]
+    assert set(properties) == {"periods", "grain", "end", "include_partial"}
+    assert properties["grain"]["enum"] == ["month", "quarter"]
+
+
+def test_trend_tool_call_returns_a_series(ledger):
+    [resp] = drive(MCPServer(ledger),
+                   _call("beans_trend", {"periods": 3, "end": "2026-03"}))
+    data = resp["result"]["structuredContent"]
+    assert data["report"] == "trend"
+    assert data["periods"] == ["2026-01", "2026-02", "2026-03"]
+    assert data["period_count"] == 3
+    assert len(data["rows"]) == 3
+    # Each account carries one figure per period, so a caller can trend it.
+    for account in data["accounts"]:
+        assert len(account["amounts"]) == 3
+
+
+def test_review_bundle_gains_the_series_only_on_a_trend_focus(ledger):
+    [plain] = drive(MCPServer(ledger), _call("beans_review_bundle", {}))
+    assert "trend" not in plain["result"]["structuredContent"]["statements"]
+    [focused] = drive(MCPServer(ledger),
+                      _call("beans_review_bundle", {"focus": "trend"}))
+    statements = focused["result"]["structuredContent"]["statements"]
+    assert statements["trend"]["report"] == "trend"

@@ -194,8 +194,10 @@ class MCPServer:
                     "compare": {"type": "string",
                                 "description": "also include this period's "
                                                "income statement"},
-                    "focus": {"type": "string", "enum": ["economic"],
-                              "description": "add the economic balance sheet"},
+                    "focus": {"type": "string",
+                              "enum": ["economic", "trend"],
+                              "description": "add the economic balance "
+                                             "sheet, or a trend series"},
                 },
             },
             "outputSchema": {"type": "object",

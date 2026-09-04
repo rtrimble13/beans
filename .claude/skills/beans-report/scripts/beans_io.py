@@ -27,7 +27,7 @@ READ_ONLY_PREFIXES = frozenset({
     ("report", "income"), ("report", "is"),
     ("report", "balance"), ("report", "bs"),
     ("report", "cashflow"), ("report", "cf"),
-    ("report", "trial"), ("report", "tb"),
+    ("report", "trial"), ("report", "tb"), ("report", "trend"),
     ("analyze",), ("networth",), ("status",), ("forecast",),
     ("budget", "report"), ("budget", "list"),
     ("account", "list"), ("recur", "list"), ("goal", "list"),

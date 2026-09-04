@@ -35,6 +35,11 @@ filing habits rather than of spending.
   "am I over budget this month" — answer those with a direct `beans` command,
   the MCP server, or `beans ai ask`. Reaching for a twelve-month series to
   answer a one-month question wastes everyone's time.
+- **The raw series itself.** `beans report trend` prints it, and
+  `beans_trend` returns it over MCP. If the user only wants the numbers side
+  by side, run that one command and show it. This skill is the *reading* of a
+  series — data quality, classification, inference, a ranked briefing — not
+  the fetching of one.
 - **A period-over-period briefing.** `beans ai review` and the MCP `review`
   prompt already do current-vs-prior. This skill starts at the *second* period
   back. If the question is "how did last month go", say so and hand it over.
@@ -46,9 +51,9 @@ filing habits rather than of spending.
 Non-negotiable. If following a guardrail conflicts with what you were asked,
 say so and stop — do not quietly pick the more impressive path.
 
-1. **Never include a period that has not fully elapsed.** `series.py` excludes
-   it by default; do not override that with `--include-partial` to "get the
-   latest data". On the 4th of the month, the current month reports four days of
+1. **Never include a period that has not fully elapsed.** `beans report trend`
+   and `series.py` both exclude it by default; do not override that with
+   `--include-partial` to "get the latest data". On the 4th of the month, the current month reports four days of
    spending and often no salary at all: run it into a trend and you will report
    that someone's income collapsed and their runway fell by three quarters.
    Both are false. If a partial period is shown for any reason, label it
@@ -123,11 +128,13 @@ One call. Not twelve.
 ./series.py --grain quarter --periods 8 -o /tmp/series.json
 ```
 
-`series.py` runs read-only `beans` commands and copies their figures verbatim —
+`series.py` calls `beans report trend --json` and copies its figures verbatim —
 it does no arithmetic, so every number it emits can be traced to a command you
-can re-run. Add `--ratios` for `beans analyze` per period (savings rate,
-liquidity runway, leverage) and `--budgets` for per-period budget variance.
-Check `errors` and `empty_periods` in the output before going further.
+can re-run. On a beans older than 1.1 it falls back to one `report income` per
+period and assembles the same shape; the `source` field says which ran, and
+nothing downstream changes. Add `--ratios` for `beans analyze` per period
+(savings rate, liquidity runway, leverage) and `--budgets` for per-period
+budget variance. Check `errors` and `empty_periods` before going further.
 
 ## Phase 2 — Classify
 
