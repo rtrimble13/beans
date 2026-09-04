@@ -12,6 +12,26 @@ exercised every claim below against a purpose-built 14-month ledger.
 
 ---
 
+## Status — accepted and built
+
+Phases 1 and 3 shipped on this branch: `.claude/skills/beans-report/`
+(`SKILL.md`, three references, four scripts, nine evals), the arithmetic
+covered by 77 new tests in `tests/test_skill_scripts.py`, `install_skill.sh`
+generalized to install either or both skills, the `beans-import` description
+amended, and the documentation reorganized into one "Using beans with AI"
+section with a decision table plus a walkthrough vignette
+(`docs/vignettes/10-reporting-skill.md`).
+
+**Phase 2 remains open** by design: `beans report trend` and a `get_trend`
+tool in `_toolcore` should follow once the skill has shown which series earn
+their place. `series.py` is the interim gatherer and becomes a fallback for
+older `beans` versions when that lands.
+
+The companion evaluation's recommendation was also accepted: `beans ai` and
+`beans mcp` stay.
+
+---
+
 ## Verdict
 
 **Yes — but not as "another way to ask beans for reports."** That job is

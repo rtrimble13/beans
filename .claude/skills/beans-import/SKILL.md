@@ -11,8 +11,10 @@ description: >-
   triaged and approved before anything is written, the statement is cross-checked
   against the ledger's `beans recur` rules so a scheduled payment is not booked
   twice, then the result is proven against the statement line by line. Not for
-  reports, budgets, forecasting or financial analysis — those are read-only
-  questions the beans MCP server already answers.
+  reports, budgets, forecasting or financial analysis: a single period's
+  numbers are read-only questions the beans MCP server and `beans ai` answer
+  directly, and trends or inferences across periods belong to the
+  beans-report skill.
 ---
 
 # beans — statement import & categorization
