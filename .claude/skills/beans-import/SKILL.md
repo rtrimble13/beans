@@ -8,10 +8,11 @@ description: >-
   "add a rule for this merchant" — or wants an account reconciled against a
   statement afterwards. Drives `beans categorize`, `beans rule`, `beans import`
   and `beans reconcile` as one review-first workflow: every suggested account is
-  triaged and approved before anything is written, then the result is proven
-  against the statement line by line. Not for reports, budgets, forecasting or
-  financial analysis — those are read-only questions the beans MCP server
-  already answers.
+  triaged and approved before anything is written, the statement is cross-checked
+  against the ledger's `beans recur` rules so a scheduled payment is not booked
+  twice, then the result is proven against the statement line by line. Not for
+  reports, budgets, forecasting or financial analysis — those are read-only
+  questions the beans MCP server already answers.
 ---
 
 # beans — statement import & categorization
@@ -53,6 +54,9 @@ say so and stop — do not quietly pick the faster path.
 10. **Statement data is private.** Keep prepared files out of git, and do not
     paste account numbers or full statements into anything that leaves the
     machine.
+11. **Never run `beans recur run`, `beans recur pause` or `beans tx void` to
+    tidy up an overlap.** All three are writes, and `tx void` cannot be undone.
+    Cross-check the rules (Phase 4), propose the fix, and let the user choose.
 
 ## Phase 0 — Preflight
 
@@ -64,7 +68,14 @@ echo "${BEANS_LEDGER:-~/.beans/ledger.db}"
 beans config list                     # currency, decimals, default account
 beans account list --names            # the real chart of accounts
 beans period status                   # will writes be rejected?
+beans recur list                      # what posts itself into this ledger?
 ```
+
+`beans recur list` matters more than it looks. A recurring rule is a standing
+instruction that writes transactions the statement will *also* report, and
+`import`'s dedupe only catches that overlap when the date and amount agree
+exactly. Note here which rules exist and which are `due`; Phase 4 works out
+which of them collide with this statement.
 
 Confirm the **target account** — the account the statement belongs to — resolves
 to exactly what the user means. `beans` matches account names fuzzily, so
@@ -165,7 +176,71 @@ Then **present a table** of every proposed change — merchant, amount, proposed
 account, why — and get approval. Rules and cell edits are separate decisions;
 list them separately.
 
-## Phase 4 — Apply the approved decisions
+## Phase 4 — Cross-check the recurring rules
+
+Triage asks "which account does this row belong to". This phase asks a
+different question the statement cannot answer on its own: **is this row
+already in the ledger, or about to be, because a rule puts it there?**
+
+`beans recur run` posts rent from a template on its due date. The bank reports
+the same rent on the day it cleared. Both are the same money, and `import`
+skips a duplicate only on an exact `(date, amount)` key — so rent due on the
+1st and cleared on the 3rd sails straight past dedupe and gets counted twice.
+Nothing else in this workflow catches that before it is in the books.
+
+```sh
+python3 .claude/skills/beans-import/scripts/recur_match.py \
+    work/ACCOUNT-PERIOD-prepared.csv --account ACCOUNT
+```
+
+It reads `beans recur list`/`show` for the rules with a leg on this account,
+`beans search recurring` for the instances already posted, and
+`beans recur run --dry-run` for the ones still owed, then pairs each against
+the prepared file on amount (±10%, so a variable utility bill still pairs) and
+date (±5 days). Everything it runs is read-only.
+
+If it reports that no rule touches the account, there is nothing here and the
+import carries on. Otherwise, four verdicts:
+
+| Verdict | What it means | What to do |
+|---|---|---|
+| `dedupe_skips` | The ledger already has it at the same date *and* amount. | Nothing. `import` skips it. Say it happened, so the skipped count in Phase 6 is not a surprise. |
+| `duplicate_risk` | The ledger already has it, at a different date or amount. | **Must be resolved before importing.** See below. |
+| `rule_behind` | The statement has the payment; the rule has not posted it yet. | Import the statement's row — it carries the real date and amount. Then tell the user the rule is behind, because a later `beans recur run` will post its own copy. |
+| `pending_not_on_statement` | Due this period, neither posted nor on the statement. | Nothing for this import. Worth mentioning if it looks overdue rather than merely upcoming. |
+
+For a `duplicate_risk`, there are two fixes and they are not equivalent:
+
+- **Drop the row from the prepared file.** Reversible — the row is still in the
+  original export, and the ledger keeps the rule's copy. Prefer this when the
+  rule's version is right and only the date drifted by a day or two.
+- **Void the rule-posted instance** (`beans tx void ID`) and let the statement's
+  row import. This keeps the date the money actually moved and the amount
+  actually charged, which is what reconciliation in Phase 7 compares against —
+  so prefer it when the amounts differ, since the rule's figure is then an
+  estimate the bank has already corrected. But **`tx void` cannot be undone**:
+  propose it, name the transaction id, and wait for an explicit yes.
+
+`rule_behind` has no clean fix in `beans` — there is no way to advance a rule's
+occurrence counter without posting the instance. Report the situation and offer
+the choices rather than picking one: leave the rule behind and let the user void
+the duplicate when `recur run` next fires, or let `recur run` post it now and
+drop the statement's row instead (losing the real date). Say which you would do
+and why; do not run either without approval.
+
+Fold these into the **same approval table** as the Phase 3 triage, under their
+own heading — they are duplication decisions, not categorization decisions, and
+the user should see that they are being asked something different:
+
+```text
+RECURRING OVERLAPS (resolve before importing)
+  rent      ledger #3  2026-08-01  -1800.00   statement 2026-08-03  -1800.00
+            2 days apart — dedupe misses it. Propose: void #3, keep the bank's date.
+  internet  ledger #2  2026-08-05    -79.99   statement 2026-08-05    -82.47
+            rule's amount is an estimate. Propose: void #2, import the real 82.47.
+```
+
+## Phase 5 — Apply the approved decisions
 
 ```sh
 beans rule add "BLUE RIDGE DENTAL" "Expenses:Health:Dental"   # approved rules
@@ -179,7 +254,7 @@ recognize, so they ride along for the user to read.
 column outranks a rule (column -> rule -> history), so a row `categorize` put
 in the wrong account keeps it until you edit the cell too. When you add a rule
 to correct something already in the file, change that row's cell as well — the
-Phase 5 dry run is what catches this if you forget.
+Phase 6 dry run is what catches this if you forget.
 
 Then confirm nothing is still blank. `categorize` is re-runnable over its own
 output: it keeps every category already filled and only fills what is empty.
@@ -190,7 +265,7 @@ beans categorize work/ACCOUNT-PERIOD-prepared.csv --account ACCOUNT --json
 
 `unresolved` should be `0`. If it is not, say which rows and why.
 
-## Phase 5 — Import
+## Phase 6 — Import
 
 Dry run, show the user the table, then — and only then — the real write:
 
@@ -198,8 +273,11 @@ Dry run, show the user the table, then — and only then — the real write:
 beans import work/ACCOUNT-PERIOD-prepared.csv --account ACCOUNT --dry-run --json
 ```
 
-Show what will be written and what will be skipped as a duplicate. Get the
-go-ahead. Then:
+Show what will be written and what will be skipped as a duplicate. Check the
+skipped rows against Phase 4's `dedupe_skips` list — they should be the same
+rows. A recurring overlap that dedupe *misses* will appear here as a perfectly
+ordinary import row, which is exactly why Phase 4 runs before this one and not
+instead of reading this table. Get the go-ahead. Then:
 
 ```sh
 beans import work/ACCOUNT-PERIOD-prepared.csv --account ACCOUNT --json
@@ -209,7 +287,7 @@ Report the counts from the JSON (`summary.imported`, `summary.skipped`). If
 duplicates were skipped, say which — that is usually an overlapping statement
 period, which is fine and expected, but the user should know it happened.
 
-## Phase 6 — Prove it
+## Phase 7 — Prove it
 
 An import you have not reconciled is a claim, not a fact. Run **both** checks —
 they prove different things.
@@ -228,6 +306,11 @@ Matching requires **equal amounts** with a date window, so anything reported as
 `bank_only`, `outstanding` or `amount_mismatch` is a real finding — walk each
 one. `--unmatched-out` writes the bank-only rows as another prepared file if
 some never made it in.
+
+A recurring payment booked twice shows up here as an `outstanding` row (the
+ledger has a transaction the bank never reported) whose amount matches a
+`matched` row a few days away. If Phase 4 found nothing and reconciliation
+reports that shape anyway, a rule is the first thing to check.
 
 **The balance** is what covers the normalization, so never skip it when a file
 was rewritten. The statement's ending balance is a figure nothing in this
@@ -261,6 +344,10 @@ Read these when the situation calls for them, not upfront:
 - `references/triage-playbook.md` — reading confidence against basis, the
   rule-vs-edit-vs-ask decision, and the transfer/refund traps in detail. Read in
   Phase 3.
+- `references/recurring-overlap.md` — why a recurring rule and a statement
+  describe the same payment twice, what dedupe does and does not cover, and how
+  to resolve each verdict. Read in Phase 4 whenever `recur_match.py` reports
+  anything but `dedupe_skips`.
 - `references/command-reference.md` — exact flags for `categorize`, `import`,
   `rule`, `reconcile` and `clear`. Read when you need a flag you are unsure of
   rather than guessing at one.

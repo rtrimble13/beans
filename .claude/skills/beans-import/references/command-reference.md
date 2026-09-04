@@ -5,7 +5,7 @@ Only the commands this workflow uses. `beans <command> -h` is authoritative;
 
 Global: `beans -f PATH ...` or `export BEANS_LEDGER=...` selects the ledger
 (default `~/.beans/ledger.db`). `--json` is available on everything below
-except `rule add`/`rule remove`.
+except `rule add`/`rule remove`, `recur show` and `tx void`.
 
 ## `beans categorize` — suggest accounts (read-only)
 
@@ -51,8 +51,11 @@ Counter-account resolution order: row's category column → saved rule →
 (`--learn` only) history → `--category`. Unrecognized columns are ignored, so
 `confidence` and `basis` ride along harmlessly.
 
-Dedupe is count-aware on `(date, account, amount)`: re-importing a file is a
-no-op, but two distinct same-day same-amount rows both import.
+Dedupe is count-aware on `(date, account, amount)` over **non-void** postings:
+re-importing a file is a no-op, but two distinct same-day same-amount rows both
+import. It does not know about recurring rules — a rule-posted instance whose
+date or amount differs from the statement's is not a duplicate by this key. See
+`recurring-overlap.md`.
 
 JSON shape: `summary` (`rows`, `imported`, `skipped`), `dry_run`, plus
 `imported[]` and `skipped[]` with `id` (null on a dry run), `date`,
@@ -72,6 +75,47 @@ Longest matching pattern wins, regardless of insertion order — so
 Rules always beat inference. Reserve them for what history cannot know: a
 brand-new merchant whose account is already known, or a deliberate change of
 mind going forward.
+
+## `beans recur` — rules that post transactions on a schedule
+
+Read-only introspection, which is all this workflow needs:
+
+```
+beans recur list [--json]                    # cadence, next_due, status, count
+beans recur show NAME                        # postings — no --json
+beans recur run --dry-run [--to DATE] [--json]   # instances still owed
+beans search recurring --json                # instances already posted
+```
+
+| Command | Notes |
+|---|---|
+| `recur list --json` | `rules[]` with `name`, `frequency`, `start`, `end`, `next_due`, `status` (`due`/`scheduled`/`paused`/`ended`), `posted_count`, `amount`. **No accounts** — and `amount` is the positive (expense) leg, not the sign an asset statement shows. |
+| `recur show NAME` | The only place a rule's accounts appear. Text only; the posting block is `    ACCOUNT   AMOUNT` per line, account names may contain spaces. |
+| `recur run --dry-run --to DATE --json` | `posted[]` with `rule`, `date`, `description`, `amount` for every occurrence due through DATE. Writes nothing. |
+| `search recurring --json` | Instances already posted, tagged `recurring`. Search is a LIKE over description/payee/tags, so re-check `tags` rather than trusting the hit. |
+
+**Writes — never run as part of an import without explicit approval:**
+
+```
+beans recur run [--to DATE]        # posts every due occurrence
+beans recur pause NAME             # suspends a rule
+beans recur remove NAME            # deletes it (history kept, counter lost)
+```
+
+`recur` has no edit: changing a rule's amount is `remove` then `add`, which
+resets its occurrence counter. There is also no way to mark an occurrence
+posted without posting it.
+
+## `beans tx void` — retract a transaction
+
+```
+beans tx void ID
+```
+
+**One-way. There is no unvoid.** The transaction is kept for history and
+filtered out of every query, including import's dedupe — which is what makes it
+the tool for replacing a rule-posted instance with the statement's own row.
+Requires an open period. Propose it with the id; never run it unasked.
 
 ## `beans reconcile` — prove the ledger matches the bank
 
@@ -109,6 +153,7 @@ beans account list --names          # bare account names, for validation
 beans account add NAME --type TYPE  # e.g. --type expense; needs explicit approval
 beans search "TEXT" [--limit N] [--json]
 beans register ACCOUNT [--period P] [--json]
+beans tx show ID
 beans status
 beans balances [--json]
 beans config list

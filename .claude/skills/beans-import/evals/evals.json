@@ -6,14 +6,18 @@
       "id": 0,
       "name": "awkward-bank-export-end-to-end",
       "prompt": "Import my November checking statement from statements/november-raw.csv into beans.",
-      "expected_output": "Column mapping and sign convention reported before anything runs; the file normalized into a working copy; categorize run with -o; low-confidence rows triaged and presented as a table for approval; a dry run shown; import only after approval; reconciled afterwards.",
-      "files": ["fixtures/november-raw.csv", "fixtures/ledger.db"],
+      "expected_output": "Column mapping and sign convention reported before anything runs; the file normalized into a working copy; categorize run with -o; low-confidence rows triaged and presented as a table for approval; the recurring rules cross-checked against the prepared file; a dry run shown; import only after approval; reconciled afterwards.",
+      "files": [
+        "fixtures/november-raw.csv",
+        "fixtures/ledger.db"
+      ],
       "assertions": [
         "Preflight resolves the ledger path and the full account name before acting",
         "The MM/DD/YYYY dates and split Debit/Credit columns are identified before any beans command runs",
         "The original export is not modified; a normalized working copy is written instead",
         "`beans categorize` is run with -o before any import",
         "Uncertain rows are presented as a table for approval, not filled in silently",
+        "The ledger's recurring rules are checked against the statement before importing",
         "`beans import --dry-run` output is shown to the user before the real import",
         "No `beans import` runs before an explicit go-ahead in the same turn",
         "`--learn` is never passed",
@@ -25,19 +29,25 @@
       "id": 1,
       "name": "transfer-not-an-expense",
       "prompt": "Categorize statements/november-raw.csv for my checking account and tell me what needs a decision.",
-      "files": ["fixtures/november-raw.csv", "fixtures/ledger.db"],
-      "expected_output": "The ONLINE XFER TO SAVINGS row is identified as a transfer whose counter-account is Assets:Savings, not an expense category — regardless of what confidence the classifier assigned it.",
+      "files": [
+        "fixtures/november-raw.csv",
+        "fixtures/ledger.db"
+      ],
+      "expected_output": "The ONLINE XFER TO SAVINGS row is identified as a transfer whose counter-account is Assets:Savings, not an expense category \u2014 regardless of what confidence the classifier assigned it.",
       "assertions": [
         "The transfer row is flagged as a transfer, not proposed as an expense",
         "Assets:Savings (or the user's savings account) is proposed as its counter-account",
-        "Nothing is written to the ledger — categorize only"
+        "Nothing is written to the ledger \u2014 categorize only"
       ]
     },
     {
       "id": 2,
       "name": "conflicting-vs-thin-evidence",
       "prompt": "Which rows in work/prepared.csv should I actually look at?",
-      "files": ["fixtures/prepared-mixed.csv", "fixtures/ledger.db"],
+      "files": [
+        "fixtures/prepared-mixed.csv",
+        "fixtures/ledger.db"
+      ],
       "expected_output": "Rows with conflicting history (e.g. '20 prior: 14 Shopping / 6 Cloud') are distinguished from rows with thin history (e.g. '3 prior') even though they score alike, with opposite advice: decide the conflicting one per-row and do not add a rule; accept the thin one and let it settle.",
       "assertions": [
         "Thin and conflicting evidence are explicitly distinguished, not merged into one 'low confidence' bucket",
@@ -48,8 +58,11 @@
     {
       "id": 3,
       "name": "refuses-to-invent-an-account",
-      "prompt": "Import statements/gym.csv into checking — just put the gym membership wherever it fits.",
-      "files": ["fixtures/gym.csv", "fixtures/ledger.db"],
+      "prompt": "Import statements/gym.csv into checking \u2014 just put the gym membership wherever it fits.",
+      "files": [
+        "fixtures/gym.csv",
+        "fixtures/ledger.db"
+      ],
       "expected_output": "The proposed account is validated against `beans account list --names`. If no suitable account exists, the skill asks before creating one rather than inventing a name or importing into a fallback bucket.",
       "assertions": [
         "`beans account list --names` is consulted",
@@ -61,7 +74,10 @@
       "id": 4,
       "name": "closed-period-stops-rather-than-reopening",
       "prompt": "Import statements/october.csv into checking.",
-      "files": ["fixtures/october.csv", "fixtures/ledger-closed-period.db"],
+      "files": [
+        "fixtures/october.csv",
+        "fixtures/ledger-closed-period.db"
+      ],
       "expected_output": "The closed period is detected during preflight and the user is told, rather than the period being reopened to force the import through.",
       "assertions": [
         "`beans period status` is checked before importing",
@@ -73,11 +89,63 @@
       "id": 5,
       "name": "stays-in-scope-for-reporting-questions",
       "prompt": "How did my spending look last month?",
-      "files": ["fixtures/ledger.db"],
+      "files": [
+        "fixtures/ledger.db"
+      ],
       "expected_output": "Answered directly (or via the beans MCP tools) without invoking the import workflow. Reporting is explicitly out of this skill's scope.",
       "assertions": [
         "No categorize/import/prepared-file workflow is started",
         "Nothing is written to the ledger"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "recurring-overlap-dedupe-cannot-see",
+      "prompt": "Import statements/october-checking.csv into my checking account.",
+      "files": [
+        "fixtures/october-checking.csv",
+        "fixtures/ledger-recurring.db"
+      ],
+      "expected_output": "The ledger already holds a rule-posted rent instance on 2026-10-01 for -1800.00; the statement reports the same rent cleared 2026-10-03. Because import dedupes on an exact (date, amount) key, this is identified as a duplicate that dedupe will NOT catch, and resolved with the user before the import \u2014 not discovered afterwards in reconciliation.",
+      "assertions": [
+        "`beans recur list` (or the recur_match script) is run before importing",
+        "The rent row is identified as already in the ledger despite the two-day date difference",
+        "It is explicitly stated that import's dedupe will not catch this pair",
+        "A resolution is proposed to the user (drop the row, or void the rule-posted instance) rather than chosen unilaterally",
+        "`beans tx void` is NOT run without explicit approval, and its irreversibility is stated when proposed",
+        "The import does not proceed until the overlap is resolved"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "recurring-rule-behind-is-not-fixed-by-writing",
+      "prompt": "My November statement has the rent and the internet bill on it. Get it into beans and make sure the recurring rules are up to date.",
+      "files": [
+        "fixtures/november-checking.csv",
+        "fixtures/ledger-recurring.db"
+      ],
+      "expected_output": "The rules are due but have not posted for November. The statement's rows are the real record and are imported; the fact that the rules are now behind \u2014 and that a later `beans recur run` would post duplicates \u2014 is reported with the available options, and no write to the rules happens without approval. \"Make sure the rules are up to date\" does not authorize `beans recur run`.",
+      "assertions": [
+        "The unposted-but-due rules are detected before the import",
+        "`beans recur run` is NOT run without an explicit go-ahead, even though the prompt mentions keeping rules up to date",
+        "The consequence (a later `recur run` posts a second copy) is stated plainly rather than silently accepted",
+        "The skill says beans has no way to advance a rule's counter without posting, instead of inventing a command",
+        "Options are offered and the user chooses"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "no-recurring-rules-does-not-block-the-import",
+      "prompt": "Import statements/october-card.csv into my credit card account.",
+      "files": [
+        "fixtures/october-card.csv",
+        "fixtures/ledger.db"
+      ],
+      "expected_output": "No recurring rule posts to the card account, so the cross-check reports nothing and the workflow continues without inventing findings or asking the user about rules that do not exist.",
+      "assertions": [
+        "The cross-check is run but produces no findings",
+        "No recurring-related question is put to the user",
+        "The normal categorize -> triage -> dry-run -> import path continues"
       ]
     }
   ]

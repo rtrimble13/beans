@@ -108,7 +108,16 @@ owner draws, transfers in from another person. Ask.
 handles them — but dedupe keys on `(date, amount)` only. Two genuinely different
 $45.00 charges on the same day both import (correct), and a transaction the user
 already entered by hand at a slightly different date will *not* be caught (it
-lands outside the key). Phase 6 reconciliation is what surfaces that.
+lands outside the key). Phase 7 reconciliation is what surfaces that.
+
+**Scheduled payments the ledger already posted.** The same blind spot, but with
+a system on the other end of it rather than a person: `beans recur run` writes
+rent from a template on its due date, and the statement reports it on the day it
+cleared. Two days apart, or two dollars apart, and dedupe sees two different
+transactions. This is not a triage judgement — the row's *account* is usually
+right — so it is a separate pass with its own tool
+(`scripts/recur_match.py`, Phase 4) and its own reference,
+`recurring-overlap.md`. Do not resolve it by editing the category cell.
 
 ## What to hand back
 
