@@ -527,6 +527,46 @@ category. The net change reconciles to beginning and ending cash.
 Non-cash transactions (e.g. groceries charged to a credit card) correctly
 appear on the income statement but not here until the card is paid.
 
+### `report trend`
+
+```
+beans report trend [--periods N] [--grain month|quarter] [--end PERIOD]
+                   [--include-partial] [--json]
+```
+
+Income, expenses, net and per-account flows **across N periods** — the one
+report here that is a series rather than a snapshot. Every other statement
+covers a single period, and `report income --compare` reaches exactly one
+period back, so a question about drift ("are groceries creeping up?") had
+nowhere to go before this.
+
+Defaults to the last 12 complete months. The text output is a per-period
+summary plus a by-account table ranked by largest change; **`--json` carries
+the full per-period figure for every account**, which is what you want for
+plotting or further analysis.
+
+```sh
+beans report trend                            # last 12 complete months
+beans report trend --periods 8 --grain quarter
+beans report trend --end 2026-06 --periods 6  # a fixed, reproducible window
+beans report trend --json | jq '.accounts[0]'
+```
+
+**The window ends at the last *complete* period.** This is the important
+default. Four days into a month, that month has rent posted and no paycheck:
+`report income --period this-month` will honestly report income of 0.00 and a
+net loss, and putting that at the end of a twelve-month series reads as an
+income collapse that reverses on the 15th. `trend` therefore stops at the last
+period that fully elapsed and names the one it left out (`excluded_partial`).
+
+`--include-partial` opts back in. The period is then marked `*` in the text
+output, carries `"partial": true` in JSON, and is **left out of the averages** —
+a part-elapsed period dragging a mean is the same error wearing a hat.
+
+Averages are over complete periods only (`totals.complete_periods` says how
+many). The savings rate is computed the same way `analyze` computes it, so the
+two agree for the same window.
+
 ### `report trial` (alias `tb`)
 
 ```
@@ -543,7 +583,10 @@ total credits across every account. Aliased as `tb`.
   statements.
 - Use `--compare` on the income statement routinely, not just when
   something looks off — trend visibility is most useful before a problem
-  is big enough to notice by eye.
+  is big enough to notice by eye. When one period back is not enough, that
+  is what `report trend` is for.
+- Prefer an explicit `--end` when you want a `report trend` window you can
+  reproduce tomorrow; without it the window moves as periods complete.
 - Get your cash/cashflow account flags right (see `account add --cash`)
   before relying on `report cashflow` — it's the statement most sensitive
   to misconfigured accounts.
@@ -1895,7 +1938,7 @@ beans ai ask                       # interactive REPL
 ### `ai review`
 
 ```
-beans ai review [-p PERIOD] [--compare PERIOD] [--focus economic]
+beans ai review [-p PERIOD] [--compare PERIOD] [--focus economic|trend]
                 [--brief] [--json]
 ```
 
@@ -1912,6 +1955,7 @@ read-only; there is no write path.
 | `--from` / `--to DATE` | Explicit period bounds; override `--period`. | — |
 | `--compare PERIOD` | Also gather this period's income statement for an explicit side-by-side. | — |
 | `--focus economic` | Additionally narrate the economic balance sheet (human-capital NPV, lifetime consumption, economic net worth). | — |
+| `--focus trend` | Additionally gather a 12-period `report trend` series, so the briefing can tell a standing drift from a one-off instead of only comparing two periods. Opt-in because the series is the largest item in the bundle. | — |
 | `--brief` | A 3-bullet TL;DR instead of a full briefing. | off |
 | `--json` | Emit structured findings (period, health, changes, concerns, suggestions) instead of prose, for scripting. | off |
 
@@ -1919,6 +1963,7 @@ read-only; there is no write path.
 beans ai review
 beans ai review --period ytd --compare last-quarter
 beans ai review --focus economic
+beans ai review --focus trend
 beans ai review --json | jq .concerns
 ```
 
@@ -2039,11 +2084,13 @@ fixable messages. It:
 
 Read-only tools, each wrapping a `beans … --json` command and returning
 structured output (`readOnlyHint: true`): `beans_income_statement`,
-`beans_balance_sheet`, `beans_cashflow`, `beans_analyze`,
+`beans_balance_sheet`, `beans_cashflow`, `beans_trend` (a multi-period
+series — the others are all snapshots), `beans_analyze`,
 `beans_list_transactions`, `beans_search`, `beans_register`,
 `beans_budget_report`, `beans_forecast`, `beans_networth`,
 `beans_list_accounts`, `beans_economic_balance_sheet`, and
-`beans_review_bundle` (assembles the full analyst report set in one call). Bad
+`beans_review_bundle` (assembles the full analyst report set in one call;
+pass `focus: "trend"` to include the series). Bad
 account names come back with the closest real matches so the host can
 self-correct.
 

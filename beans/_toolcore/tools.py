@@ -86,6 +86,35 @@ READ_TOOLS: list[Tool] = [
         lambda a: ["report", "cashflow", "--json"] + _period_argv(a),
     ),
     Tool(
+        "get_trend",
+        "Income, expenses, net and per-account flows across N periods — the "
+        "series behind any question about drift over time ('are groceries "
+        "creeping up?', 'how has my savings rate moved?'). Snapshot reports "
+        "cannot answer those. Excludes the period in progress by default, "
+        "because a part-elapsed period reads as a collapse.",
+        _schema({"periods": {"type": "integer",
+                             "description": "how many periods (default 12)"},
+                 "grain": {"type": "string",
+                           "enum": ["month", "quarter"],
+                           "description": "period size (default month)"},
+                 "end": {"type": "string",
+                         "description": "last period to include, e.g. "
+                                        "2026-08 or 2026-Q2 (default: the "
+                                        "last complete one)"},
+                 "include_partial": {
+                     "type": "boolean",
+                     "description": "include the period in progress; it is "
+                                    "labelled partial and left out of the "
+                                    "averages"}}),
+        lambda a: (["report", "trend", "--json"]
+                   + (["--periods", str(a["periods"])]
+                      if a.get("periods") else [])
+                   + (["--grain", str(a["grain"])] if a.get("grain") else [])
+                   + (["--end", str(a["end"])] if a.get("end") else [])
+                   + (["--include-partial"] if a.get("include_partial")
+                      else [])),
+    ),
+    Tool(
         "get_analysis",
         "Financial ratios and analysis: savings rate, liquidity runway, "
         "current ratio, debt-to-assets, debt-to-income, and top expenses.",

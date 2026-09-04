@@ -15,6 +15,7 @@ import pytest
 from beans import cli
 from beans.ai import config as ai_config
 from beans.ai import ask as ai_ask
+from beans.ai import prompts as ai_prompts
 from beans.ai import review as ai_review
 from beans.ai.client import Response, ToolCall
 from beans._toolcore import redaction
@@ -490,3 +491,20 @@ def test_live_ask_smoke(ledger):
     ai_ask.run_ask(ledger, "what is my total income in 2026?",
                    client=client, cfg=cfg, out=out)
     assert out.getvalue().strip()
+
+
+def test_review_bundle_trend_focus_adds_the_series(ledger):
+    """The series is the largest item in a bundle, so it is opt-in: a
+    period-over-period review does not carry it."""
+    plain = ai_review.assemble_bundle(ledger, period="2026")
+    assert "trend" not in plain["statements"]
+    focused = ai_review.assemble_bundle(ledger, period="2026", focus="trend")
+    assert focused["statements"]["trend"]["report"] == "trend"
+
+
+def test_review_prompt_explains_a_trend_focus():
+    system = ai_prompts.review_system(brief=False, focus="trend",
+                                      structured=False)
+    assert "trend series" in system
+    assert "not a trend" in system          # one large period is not a trend
+    assert "period in progress" in system

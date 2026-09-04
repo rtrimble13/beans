@@ -480,6 +480,15 @@ def cmd_report_cashflow(args) -> int:
     return 0
 
 
+def cmd_report_trend(args) -> int:
+    led = _open(args)
+    data = reports.trend(led, count=args.periods, grain=args.grain,
+                         end_key=args.end,
+                         include_partial=args.include_partial)
+    _emit(args, led, data, reports.render_trend)
+    return 0
+
+
 def cmd_report_trial(args) -> int:
     led = _open(args)
     as_of = parse_date(args.date, default=date.today())
@@ -1664,6 +1673,23 @@ def build_parser() -> argparse.ArgumentParser:
     _add_period_args(p)
     _add_json_arg(p)
     p.set_defaults(func=cmd_report_cashflow)
+    p = report_sub.add_parser(
+        "trend",
+        help="income, expenses and per-account flows across N periods")
+    p.add_argument("--periods", "--months", dest="periods", type=int,
+                   default=12, metavar="N",
+                   help="how many periods to cover (default 12)")
+    p.add_argument("--grain", choices=["month", "quarter"], default="month",
+                   help="period size (default month)")
+    p.add_argument("--end", metavar="PERIOD",
+                   help="last period to include, e.g. 2026-08 or 2026-Q2 "
+                        "(default: the last complete period)")
+    p.add_argument("--include-partial", action="store_true",
+                   help="include the period in progress. Off by default: a "
+                        "part-elapsed period is not comparable to whole ones")
+    p.add_argument("--json", action="store_true", help="JSON output")
+    p.set_defaults(func=cmd_report_trend)
+
     p = report_sub.add_parser("trial", aliases=["tb"], help="trial balance")
     p.add_argument("--date", "-d", help="as-of date (default: today)")
     _add_json_arg(p)
@@ -2183,8 +2209,9 @@ def _add_ai_parser(sub) -> None:
     p.add_argument("--compare", metavar="PERIOD",
                    help="also gather this period's income statement for "
                         "an explicit comparison")
-    p.add_argument("--focus", choices=["economic"],
-                   help="narrate a specific area (economic balance sheet)")
+    p.add_argument("--focus", choices=["economic", "trend"],
+                   help="narrate a specific area: the economic balance "
+                        "sheet, or a 12-period trend series")
     p.add_argument("--brief", action="store_true",
                    help="a 3-bullet TL;DR instead of a full briefing")
     _add_json_arg(p)

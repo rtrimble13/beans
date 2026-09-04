@@ -1077,3 +1077,79 @@ def test_rule_matching_prefers_the_most_specific_pattern(capsys, ledger_file,
     assert code == 0
     assert "Expenses:Cloud" in out        # the specific rule wins
     assert "Expenses:Shopping" in out     # the broad one still works
+
+
+def _seed_two_months(capsys, ledger_file):
+    """Two complete months, drained through `run` so the capsys buffer holds
+    only the output of the command under test."""
+    code, _, _ = run(capsys, ledger_file, "tx", "add", "--date", "2026-06-01",
+                     "--desc", "Opening", "--post", "Assets:Checking", "9000",
+                     "--post", "Equity:Opening Balances")
+    assert code == 0
+    for month in (6, 7):
+        code, _, _ = run(capsys, ledger_file, "earn", "5000", "Salary",
+                         "--date", f"2026-{month:02d}-15")
+        assert code == 0
+        code, _, _ = run(capsys, ledger_file, "spend", "1200", "Rent",
+                         "--date", f"2026-{month:02d}-02")
+        assert code == 0
+
+
+def test_report_trend_text(capsys, ledger_file):
+    _seed_two_months(capsys, ledger_file)
+    code, out, _ = run(capsys, ledger_file, "report", "trend",
+                       "--periods", "2", "--end", "2026-07")
+    assert code == 0
+    assert "TREND" in out
+    assert "2026-06" in out and "2026-07" in out
+    assert "BY ACCOUNT" in out
+    assert "Income:Salary" in out
+
+
+def test_report_trend_json(capsys, ledger_file):
+    _seed_two_months(capsys, ledger_file)
+    code, out, _ = run(capsys, ledger_file, "report", "trend",
+                       "--periods", "2", "--end", "2026-07", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["report"] == "trend"
+    assert data["periods"] == ["2026-06", "2026-07"]
+    # Counts stay integers; money becomes major-unit decimal strings.
+    assert data["period_count"] == 2
+    assert data["totals"]["complete_periods"] == 2
+    assert data["rows"][0]["income"] == "5000.00"
+    salary = next(row for row in data["accounts"]
+                  if row["account"] == "Income:Salary")
+    assert salary["amounts"] == ["5000.00", "5000.00"]
+    # Flags stay booleans and ratios stay numbers through the money encoder.
+    assert data["rows"][0]["partial"] is False
+    assert data["rows"][0]["savings_rate_pct"] == 76.0
+
+
+def test_report_trend_quarter_grain(capsys, ledger_file):
+    _seed_two_months(capsys, ledger_file)
+    code, out, _ = run(capsys, ledger_file, "report", "trend", "--grain",
+                       "quarter", "--periods", "1", "--end", "2026-Q3",
+                       "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["periods"] == ["2026-Q3"]
+    assert data["grain"] == "quarter"
+    # June falls in Q2 and July in Q3, so Q3 alone carries one paycheck.
+    assert data["rows"][0]["income"] == "5000.00"
+
+
+def test_report_trend_rejects_a_bad_window(capsys, ledger_file):
+    code, _, err = run(capsys, ledger_file, "report", "trend", "--periods", "0")
+    assert code == 1
+    assert "at least one period" in err
+
+
+def test_report_trend_on_an_empty_ledger(capsys, ledger_file):
+    capsys.readouterr()          # drop the fixture's `init` banner
+    code, out, _ = run(capsys, ledger_file, "report", "trend",
+                       "--periods", "3", "--end", "2026-07", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["accounts"] == []
+    assert data["totals"]["net_income"] == "0.00"

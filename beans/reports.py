@@ -15,7 +15,9 @@ from beans import loans
 from beans.ledger import Ledger
 from beans.models import AccountType
 from beans.render import Table, bold, money, rollup, strip_shared_root
-from beans.utils import add_months, month_bounds, prior_period
+from beans.utils import (BeansError, add_months, last_complete_period,
+                         month_bounds, parse_period, period_key,
+                         period_months, prior_period, shift_period)
 
 
 def to_major(minor: int, decimals: int) -> str:
@@ -53,7 +55,10 @@ NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   # import: row counts in the summary. The top-level
                   # "imported"/"skipped" keys hold lists, which fall
                   # through to the recursive branch either way.
-                  "imported", "skipped"}
+                  "imported", "skipped",
+                  # trend: how many periods the series spans, and how
+                  # many of them had fully elapsed.
+                  "period_count", "complete_periods"}
 
 
 def jsonify(value, decimals: int):
@@ -511,6 +516,189 @@ def render_net_worth_trend(data: dict, decimals: int, symbol: str) -> str:
         lines.append(f"Change over period: "
                      f"{money(total_change, decimals, symbol)}")
     return "\n".join(lines)
+
+
+# -- trend -------------------------------------------------------------------
+
+
+def trend(led: Ledger, count: int = 12, grain: str = "month",
+          end_key: str | None = None, today: date | None = None,
+          include_partial: bool = False) -> dict:
+    """Income, expenses, net and per-account flows across N periods.
+
+    Every other statement here is a snapshot, and `income_statement`'s
+    `compare` reaches exactly one period back, so a question about drift
+    ("are groceries creeping up?") has had no report to answer it. This is
+    that report: one grouped scan of monthly flows folded into month or
+    quarter buckets, rather than N separate statement runs.
+
+    The window ends at the last *complete* period unless `include_partial`
+    is set — see `last_complete_period` for why that default is not merely
+    a convenience.
+    """
+    if count < 1:
+        raise BeansError("a trend needs at least one period")
+    if grain not in ("month", "quarter"):
+        raise BeansError(f"invalid grain: {grain!r} (use month or quarter)")
+
+    today = today or date.today()
+    current = period_key(today, grain)
+    complete = last_complete_period(today, grain)
+    if end_key is None:
+        end_key = current if include_partial else complete
+    else:
+        # Validate, and normalize ('2026-q2' -> '2026-Q2', '2026-6' ->
+        # '2026-06'), so the keys echoed back are the ones bounds were taken
+        # from.
+        end_key = period_key(parse_period(end_key)[0], grain)
+
+    keys = [shift_period(end_key, offset, grain)
+            for offset in range(-(count - 1), 1)]
+    bounds = {key: parse_period(key)[:2] for key in keys}
+    window_start = bounds[keys[0]][0]
+    window_end = min(bounds[keys[-1]][1], today)
+
+    accounts = [account for account in led.accounts(include_closed=True)
+                if account.type in (AccountType.INCOME, AccountType.EXPENSE)]
+    flows = led.monthly_flows([a.id for a in accounts],
+                              window_start, window_end)
+    months = {key: period_months(key) for key in keys}
+
+    series: list[dict] = []
+    for account in accounts:
+        amounts = [
+            sum(flows.get((account.id, ym), 0) for ym in months[key])
+            * account.type.natural_sign
+            for key in keys
+        ]
+        # An account with no flow anywhere in the window is not a row of
+        # zeros worth printing; it simply did not participate.
+        if not any(amounts):
+            continue
+        total = sum(amounts)
+        series.append({
+            "account": account.name,
+            "type": account.type.value,
+            "amounts": amounts,
+            "total": total,
+            "average": round(total / len(keys)),
+            "first": amounts[0],
+            "last": amounts[-1],
+            "change": amounts[-1] - amounts[0],
+        })
+
+    rows = []
+    for index, key in enumerate(keys):
+        income = sum(row["amounts"][index] for row in series
+                     if row["type"] == AccountType.INCOME.value)
+        expenses = sum(row["amounts"][index] for row in series
+                       if row["type"] == AccountType.EXPENSE.value)
+        net = income - expenses
+        start, end = bounds[key]
+        rows.append({
+            "period": key,
+            "start": start,
+            "end": min(end, today),
+            "partial": key > complete,
+            "income": income,
+            "expenses": expenses,
+            "net_income": net,
+            "savings_rate_pct": (round(100 * net / income, 1)
+                                 if income else None),
+        })
+
+    # Biggest mover first: what changed is the reason to run this report.
+    series.sort(key=lambda row: (-abs(row["change"]), row["account"]))
+
+    # Averages are taken over COMPLETE periods only. A part-elapsed period
+    # holds part of a month's spending against a whole month of history, so
+    # averaging it in drags every summary figure toward a number that
+    # describes nothing — the same trap the default window avoids.
+    complete_rows = [row for row in rows if not row["partial"]]
+    # Averaging nothing is not an option, so a window that is entirely in
+    # progress averages what it has — and says so by reporting zero complete
+    # periods, rather than quietly implying the figure is comparable.
+    whole = complete_rows or rows
+    total_income = sum(row["income"] for row in whole)
+    total_expenses = sum(row["expenses"] for row in whole)
+    return {
+        "report": "trend",
+        "grain": grain,
+        "period_count": len(keys),
+        "periods": keys,
+        "complete_through": complete,
+        # Name the period left out, so a reader knows why the series stops
+        # where it does rather than assuming the ledger is behind. Only when
+        # one actually was: run on the last day of a month, nothing is in
+        # progress and claiming otherwise would be its own small lie.
+        "excluded_partial": (current if current != complete
+                             and end_key == complete else None),
+        "rows": rows,
+        "accounts": series,
+        "totals": {
+            "income": total_income,
+            "expenses": total_expenses,
+            "net_income": total_income - total_expenses,
+            "complete_periods": len(complete_rows),
+            "average_income": round(total_income / len(whole)),
+            "average_expenses": round(total_expenses / len(whole)),
+            "savings_rate_pct": (
+                round(100 * (total_income - total_expenses) / total_income, 1)
+                if total_income else None),
+        },
+    }
+
+
+def render_trend(data: dict, decimals: int, symbol: str) -> str:
+    grain = data["grain"]
+    heading = f"Last {data['period_count']} {grain}s"
+    if data["periods"]:
+        heading += f": {data['periods'][0]} to {data['periods'][-1]}"
+    lines = [bold("TREND"), heading]
+    if data.get("excluded_partial"):
+        lines.append(f"{data['excluded_partial']} is still in progress and is "
+                     "excluded.")
+    lines.append("")
+
+    def pct(value) -> str:
+        return f"{value:.1f}%" if value is not None else "n/a"
+
+    table = Table(headers=["Period", "Income", "Expenses", "Net", "Savings"],
+                  align="lrrrr")
+    for row in data["rows"]:
+        table.add(row["period"] + (" *" if row["partial"] else ""),
+                  money(row["income"], decimals),
+                  money(row["expenses"], decimals),
+                  money(row["net_income"], decimals),
+                  pct(row["savings_rate_pct"]))
+    totals = data["totals"]
+    table.rule()
+    table.add("Average",
+              money(totals["average_income"], decimals),
+              money(totals["average_expenses"], decimals),
+              money(totals["average_income"] - totals["average_expenses"],
+                    decimals),
+              pct(totals["savings_rate_pct"]))
+    lines.append(table.render())
+    if any(row["partial"] for row in data["rows"]):
+        lines.append("* still in progress — not comparable to the others, "
+                     "and excluded from the average.")
+
+    if data["accounts"]:
+        lines += ["", bold("BY ACCOUNT") + " (largest change first)"]
+        by_account = Table(
+            headers=["Account", "First", "Last", "Change", "Average"],
+            align="lrrrr")
+        for row in data["accounts"]:
+            by_account.add(row["account"],
+                           money(row["first"], decimals),
+                           money(row["last"], decimals),
+                           money(row["change"], decimals),
+                           money(row["average"], decimals))
+        lines.append(by_account.render())
+        lines += ["", "Per-period figures for every account are in --json."]
+    return "\n".join(lines)
+
 
 
 # -- register ----------------------------------------------------------------

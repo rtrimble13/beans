@@ -2,6 +2,8 @@ from datetime import date
 
 import pytest
 
+from beans import utils
+
 from beans.utils import (
     BeansError,
     add_months,
@@ -104,3 +106,58 @@ def test_prior_period_whole_months():
 def test_prior_period_arbitrary_span():
     start, end, _ = prior_period(date(2026, 6, 10), date(2026, 6, 19))
     assert (start, end) == (date(2026, 5, 31), date(2026, 6, 9))
+
+
+# -- period keys -------------------------------------------------------------
+
+@pytest.mark.parametrize("when,grain,expected", [
+    (date(2026, 9, 4), "month", "2026-09"),
+    (date(2026, 1, 31), "month", "2026-01"),
+    (date(2026, 9, 4), "quarter", "2026-Q3"),
+    (date(2026, 1, 1), "quarter", "2026-Q1"),
+    (date(2026, 12, 31), "quarter", "2026-Q4"),
+])
+def test_period_key(when, grain, expected):
+    assert utils.period_key(when, grain) == expected
+
+
+@pytest.mark.parametrize("key,delta,grain,expected", [
+    ("2026-01", -1, "month", "2025-12"),
+    ("2025-12", 1, "month", "2026-01"),
+    ("2026-06", -6, "month", "2025-12"),
+    ("2026-Q1", -1, "quarter", "2025-Q4"),
+    ("2025-Q4", 1, "quarter", "2026-Q1"),
+    ("2026-05", 0, "month", "2026-05"),
+])
+def test_shift_period(key, delta, grain, expected):
+    assert utils.shift_period(key, delta, grain) == expected
+
+
+@pytest.mark.parametrize("today,grain,expected", [
+    # A period in progress is never the last complete one.
+    (date(2026, 9, 4), "month", "2026-08"),
+    (date(2026, 9, 29), "month", "2026-08"),
+    (date(2026, 9, 30), "month", "2026-09"),   # the last day counts
+    (date(2026, 1, 1), "month", "2025-12"),
+    (date(2026, 2, 28), "month", "2026-02"),   # short month, non-leap
+    (date(2024, 2, 28), "month", "2024-01"),   # leap year: not month end
+    (date(2024, 2, 29), "month", "2024-02"),
+    (date(2026, 9, 4), "quarter", "2026-Q2"),
+    (date(2026, 9, 30), "quarter", "2026-Q3"),
+    (date(2026, 1, 15), "quarter", "2025-Q4"),
+])
+def test_last_complete_period(today, grain, expected):
+    assert utils.last_complete_period(today, grain) == expected
+
+
+def test_period_months():
+    assert utils.period_months("2026-05") == ["2026-05"]
+    assert utils.period_months("2026-Q2") == ["2026-04", "2026-05", "2026-06"]
+    assert utils.period_months("2026-Q4") == ["2026-10", "2026-11", "2026-12"]
+
+
+def test_period_key_round_trips_through_parse_period():
+    for key in ("2026-02", "2026-11", "2026-Q1", "2026-Q4"):
+        start, _end, _label = utils.parse_period(key)
+        grain = "quarter" if "Q" in key else "month"
+        assert utils.period_key(start, grain) == key

@@ -22,10 +22,13 @@ amended, and the documentation reorganized into one "Using beans with AI"
 section with a decision table plus a walkthrough vignette
 (`docs/vignettes/10-reporting-skill.md`).
 
-**Phase 2 remains open** by design: `beans report trend` and a `get_trend`
-tool in `_toolcore` should follow once the skill has shown which series earn
-their place. `series.py` is the interim gatherer and becomes a fallback for
-older `beans` versions when that lands.
+**Phase 2 shipped** in a follow-up branch: `beans report trend` is a
+first-class report (month or quarter grain, ranked by largest change, window
+ending at the last complete period), `get_trend` in `_toolcore` gives MCP
+(`beans_trend`) and `beans ai` the same series, and `beans ai review
+--focus trend` folds it into the analyst bundle. `series.py` now calls the
+native command and keeps its per-period loop only as a fallback for beans
+older than 1.1 — the two paths are asserted to produce identical output.
 
 The companion evaluation's recommendation was also accepted: `beans ai` and
 `beans mcp` stay.

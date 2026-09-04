@@ -88,6 +88,13 @@ when a comparison value is unavailable. {guardrails}"""
               "concern, and action." if brief else
               "Write a real briefing, not a data restatement.")
     focus_note = ""
+    if focus == "trend":
+        focus_note = ("\nThe bundle includes a multi-period trend series. Use "
+                      "it to separate a standing drift from a one-off: a "
+                      "single large period is not a trend, and the series "
+                      "excludes the period in progress, so do not read its "
+                      "absence as a decline. Name the window behind every "
+                      "figure you take from it.")
     if focus == "economic":
         focus_note = ("\nFocus especially on the economic balance sheet: "
                       "explain human capital (the present value of expected "

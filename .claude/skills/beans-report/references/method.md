@@ -21,10 +21,17 @@ series and the honest-looking conclusion is *"income collapsed to zero and your
 runway fell from 19.8 months to 4.6."* Both figures are real. The story is
 fiction.
 
-`series.py` ends the window at the last **complete** period
-(`beans_io.last_complete`). Do not override it. If a partial period must be
-shown, label it partial every time it appears — including in tables, where a
-reader will otherwise scan the last column as comparable.
+`beans report trend` ends the window at the last **complete** period
+(`beans.utils.last_complete_period`), names the one it left out in
+`excluded_partial`, and — when `--include-partial` is passed — marks the row
+`"partial": true` and keeps it out of the averages. `series.py` inherits all
+of that, and enforces the same rule itself on the fallback path.
+
+So the rule now lives in the product, not only in this skill. That does not
+make it your problem any less: do not override it to "get the latest data",
+and if a partial period is shown for any reason, label it partial every time
+it appears — including in tables, where a reader will otherwise scan the last
+column as comparable.
 
 The same applies at the other end: a window reaching back before the ledger's
 first transaction is padded with structural zeros, which look exactly like

@@ -28,6 +28,10 @@ def review_bundle_spec(period: str | None = None, compare: str | None = None,
     if focus == "economic":
         spec.append(("economic_balance_sheet",
                      ["economic", "bs", "--json"]))
+    if focus == "trend":
+        # Opt-in rather than default: the series is the largest item in the
+        # bundle, and a period-over-period review does not need it.
+        spec.append(("trend", ["report", "trend", "--json"]))
     return spec
 
 

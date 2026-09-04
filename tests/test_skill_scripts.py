@@ -669,9 +669,13 @@ def test_months_between_and_quarter_anchoring():
 
 
 def _fake_beans(statements, failures=()):
-    """Stand in for the `beans` CLI: return a canned income statement per
-    period, or raise for periods listed in ``failures``."""
+    """Stand in for an OLDER `beans` CLI — one without `report trend` — so
+    these tests exercise the per-period fallback assembly. Returns a canned
+    income statement per period, or raises for periods in ``failures``."""
     def run_json(argv, **_kwargs):
+        if argv[:2] == ["report", "trend"]:
+            raise beans_io.BeansCommandError(
+                argv, 2, "argument subcommand: invalid choice: 'trend'")
         if argv[0] == "networth":
             return {"rows": []}
         period = argv[argv.index("--period") + 1]
@@ -859,3 +863,126 @@ def test_a_single_payment_is_a_one_off_not_a_cancelled_subscription():
 def test_a_single_latest_payment_is_not_yet_a_new_recurring_expense():
     result = trend.classify(money([0] * 11 + [45]))
     assert result["classification"] != "new"
+
+
+# -- series: the native `beans report trend` fast path -----------------------
+
+def test_native_trend_is_used_when_the_command_exists(monkeypatch):
+    calls = []
+
+    def run_json(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["report", "trend"]:
+            return {"periods": ["2026-07", "2026-08"],
+                    "rows": [{"income": "10.00", "expenses": "4.00",
+                              "net_income": "6.00"},
+                             {"income": "10.00", "expenses": "5.00",
+                              "net_income": "5.00"}],
+                    "accounts": [{"account": "Expenses:Food:Groceries",
+                                  "amounts": ["4.00", "5.00"]}]}
+        return {"rows": []}
+
+    monkeypatch.setattr(series.bio, "run_json", run_json)
+    monkeypatch.setattr(series, "read_config",
+                        lambda *a, **k: {"currency": "USD", "decimals": 2})
+    data = series.gather(count=2, grain="month", end_key="2026-08",
+                         beans="beans", ledger=None, want_ratios=False,
+                         want_budgets=False, today=date(2026, 9, 4))
+    assert data["source"] == "beans report trend"
+    assert data["accounts"]["Expenses:Food:Groceries"] == ["4.00", "5.00"]
+    assert data["totals"]["total_expenses"] == ["4.00", "5.00"]
+    # One call for the series, not one per period.
+    assert [c for c in calls if c[:2] == ["report", "income"]] == []
+
+
+def test_series_falls_back_on_an_older_beans(monkeypatch):
+    """`report trend` landed in beans 1.1. Against an older one the script
+    must still work, producing the same shape the classifier expects."""
+    statements = {
+        "2026-07": {"period": "July 2026", "income": {"Income:Salary": "10.00"},
+                    "expenses": {"Expenses:Food:Groceries": "4.00"},
+                    "total_income": "10.00", "total_expenses": "4.00",
+                    "net_income": "6.00"},
+        "2026-08": {"period": "August 2026",
+                    "income": {"Income:Salary": "10.00"},
+                    "expenses": {"Expenses:Food:Groceries": "5.00"},
+                    "total_income": "10.00", "total_expenses": "5.00",
+                    "net_income": "5.00"},
+    }
+
+    def run_json(argv, **_kwargs):
+        if argv[:2] == ["report", "trend"]:
+            raise beans_io.BeansCommandError(
+                argv, 2, "argument subcommand: invalid choice: 'trend'")
+        if argv[0] == "networth":
+            return {"rows": []}
+        return statements[argv[argv.index("--period") + 1]]
+
+    monkeypatch.setattr(series.bio, "run_json", run_json)
+    monkeypatch.setattr(series, "read_config",
+                        lambda *a, **k: {"currency": "USD", "decimals": 2})
+    data = series.gather(count=2, grain="month", end_key="2026-08",
+                         beans="beans", ledger=None, want_ratios=False,
+                         want_budgets=False, today=date(2026, 9, 4))
+    assert "older beans" in data["source"]
+    assert data["accounts"]["Expenses:Food:Groceries"] == ["4.00", "5.00"]
+    assert data["totals"]["net_income"] == ["6.00", "5.00"]
+    assert data.get("errors") is None
+
+
+def test_a_real_trend_failure_is_recorded_not_silently_worked_around():
+    """Only 'invalid choice' means the command is missing. Anything else is a
+    genuine problem, and quietly taking the slow path would bury it."""
+    errors = []
+    def run_json(argv, **_kwargs):
+        raise beans_io.BeansCommandError(argv, 1, "database is locked")
+    import types
+    fake = types.SimpleNamespace(run_json=run_json,
+                                 BeansCommandError=beans_io.BeansCommandError)
+    original = series.bio
+    series.bio = fake
+    try:
+        assert series._native_trend(["2026-08"], "month", "beans", None,
+                                    errors) is None
+    finally:
+        series.bio = original
+    assert errors and "database is locked" in errors[0]["error"]
+
+
+def test_a_trend_answering_a_different_window_is_refused(monkeypatch):
+    errors = []
+    monkeypatch.setattr(series.bio, "run_json",
+                        lambda argv, **k: {"periods": ["2020-01"]})
+    assert series._native_trend(["2026-07", "2026-08"], "month", "beans",
+                                None, errors) is None
+    assert "unexpected window" in errors[0]["error"]
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_both_paths_produce_the_same_series(trending_ledger, tmp_path):
+    """The fallback is only safe if it is indistinguishable. Run a real
+    ledger through both and require identical output."""
+    fast = tmp_path / "fast.json"
+    slow = tmp_path / "slow.json"
+    shim = tmp_path / "beans-old"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        "for a in \"$@\"; do\n"
+        "  if [ \"$a\" = trend ]; then\n"
+        "    echo \"error: argument subcommand: invalid choice: 'trend'\" >&2\n"
+        "    exit 2\n"
+        "  fi\n"
+        "done\n"
+        f"exec {shutil.which('beans')} \"$@\"\n")
+    shim.chmod(0o755)
+
+    common = ["--months", "12", "--as-of", "2026-09-04", "-f", trending_ledger]
+    assert series.main(common + ["-o", str(fast)]) == 0
+    assert series.main(common + ["--beans", str(shim), "-o", str(slow)]) == 0
+    a, b = json.loads(fast.read_text()), json.loads(slow.read_text())
+    assert a["source"] == "beans report trend"
+    assert "older beans" in b["source"]
+    for key in ("periods", "window", "excluded_partial", "accounts",
+                "totals", "empty_periods", "net_worth", "decimals"):
+        assert a[key] == b[key], key

@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from beans import reports
 from beans.analysis import analyze
 from beans.budget import budget_report
@@ -212,3 +214,209 @@ def test_jsonify_money_uses_embedded_precision():
     j = reports.jsonify(data, 2)
     assert j == {"base": "11.00", "yen": "1000000",
                  "eur": "1000.00", "missing": None}
+
+
+# -- trend -------------------------------------------------------------------
+
+
+def seed_trend(led):
+    """Twelve months to August 2026, carrying one of each shape worth
+    finding: a raise in March, groceries climbing $20 a month, rent flat, an
+    insurance payment that stops after April, and one large one-off."""
+    post(led, date(2025, 8, 1), "opening",
+         ("Assets:Checking", 800000), ("Equity:Opening Balances", -800000))
+    for index in range(12):
+        year, month = (2025, 9 + index) if index < 4 else (2026, index - 3)
+        pay = 600000 if index < 6 else 660000
+        post(led, date(year, month, 15), "paycheck",
+             ("Assets:Checking", pay), ("Income:Salary", -pay))
+        post(led, date(year, month, 1), "rent",
+             ("Expenses:Housing:Rent", 180000), ("Assets:Checking", -180000))
+        groceries = 50000 + 2000 * index
+        post(led, date(year, month, 8), "groceries",
+             ("Expenses:Food:Groceries", groceries),
+             ("Assets:Checking", -groceries))
+        if index < 8:
+            post(led, date(year, month, 5), "insurance",
+                 ("Expenses:Insurance", 14500), ("Assets:Checking", -14500))
+    post(led, date(2026, 3, 11), "clinic",
+         ("Expenses:Health", 240000), ("Assets:Checking", -240000))
+
+
+def test_trend_window_ends_at_the_last_complete_period(led):
+    """The rule the report exists to enforce: four days into September, the
+    series stops at August and says which period it left out."""
+    seed_trend(led)
+    data = reports.trend(led, count=12, today=date(2026, 9, 4))
+    assert data["periods"][0] == "2025-09"
+    assert data["periods"][-1] == "2026-08"
+    assert "2026-09" not in data["periods"]
+    assert data["excluded_partial"] == "2026-09"
+    assert data["complete_through"] == "2026-08"
+    assert data["period_count"] == 12
+    assert all(not row["partial"] for row in data["rows"])
+
+
+def test_trend_includes_the_final_period_once_it_has_elapsed(led):
+    seed_trend(led)
+    data = reports.trend(led, count=2, today=date(2026, 8, 31))
+    assert data["periods"][-1] == "2026-08"
+    assert data["excluded_partial"] is None
+
+
+def test_trend_ties_to_the_income_statement_period_by_period(led):
+    """A trend that disagrees with the statement for the same month is worse
+    than no trend, so every period is checked against one."""
+    seed_trend(led)
+    data = reports.trend(led, count=12, today=date(2026, 9, 4))
+    for row in data["rows"]:
+        start, end = row["start"], row["end"]
+        statement = reports.income_statement(led, start, end, row["period"])
+        assert row["income"] == statement["total_income"]
+        assert row["expenses"] == statement["total_expenses"]
+        assert row["net_income"] == statement["net_income"]
+
+
+def test_trend_account_series_are_per_period_and_signed_naturally(led):
+    seed_trend(led)
+    data = reports.trend(led, count=12, today=date(2026, 9, 4))
+    by_name = {row["account"]: row for row in data["accounts"]}
+    groceries = by_name["Expenses:Food:Groceries"]
+    assert groceries["amounts"] == [50000 + 2000 * i for i in range(12)]
+    assert groceries["first"] == 50000
+    assert groceries["last"] == 72000
+    assert groceries["change"] == 22000
+    assert groceries["total"] == sum(groceries["amounts"])
+    assert groceries["average"] == round(sum(groceries["amounts"]) / 12)
+    # Income is credit-normal but reported positive, like every statement.
+    assert by_name["Income:Salary"]["amounts"][-1] == 660000
+
+
+def test_trend_reports_a_lapsed_payment_as_trailing_zeros(led):
+    """The insurance stops after April. Those must be zeros in the series,
+    not missing entries — a gap would read as 'no data', not 'stopped'."""
+    seed_trend(led)
+    data = reports.trend(led, count=12, today=date(2026, 9, 4))
+    insurance = next(row for row in data["accounts"]
+                     if row["account"] == "Expenses:Insurance")
+    assert insurance["amounts"] == [14500] * 8 + [0] * 4
+    assert insurance["last"] == 0
+
+
+def test_trend_omits_accounts_with_no_flow_in_the_window(led):
+    seed_trend(led)
+    data = reports.trend(led, count=3, today=date(2026, 9, 4))
+    names = [row["account"] for row in data["accounts"]]
+    assert "Expenses:Health" not in names      # the one-off was in March
+    assert "Expenses:Housing:Rent" in names
+
+
+def test_trend_ranks_accounts_by_largest_change(led):
+    seed_trend(led)
+    data = reports.trend(led, count=12, today=date(2026, 9, 4))
+    changes = [abs(row["change"]) for row in data["accounts"]]
+    assert changes == sorted(changes, reverse=True)
+
+
+def test_trend_quarters_aggregate_their_months(led):
+    seed_trend(led)
+    months = reports.trend(led, count=6, grain="month",
+                           end_key="2026-06", today=date(2026, 9, 4))
+    quarter = reports.trend(led, count=2, grain="quarter",
+                            end_key="2026-Q2", today=date(2026, 9, 4))
+    assert quarter["periods"] == ["2026-Q1", "2026-Q2"]
+    assert (sum(row["income"] for row in months["rows"])
+            == sum(row["income"] for row in quarter["rows"]))
+    assert (sum(row["expenses"] for row in months["rows"])
+            == sum(row["expenses"] for row in quarter["rows"]))
+
+
+def test_trend_savings_rate_matches_the_analysis_ratio(led):
+    seed_trend(led)
+    data = reports.trend(led, count=1, end_key="2026-08",
+                         today=date(2026, 9, 4))
+    row = data["rows"][0]
+    ratios = analyze(led, row["start"], row["end"], "2026-08")
+    assert row["savings_rate_pct"] == ratios["savings_rate_pct"]
+
+
+def test_trend_savings_rate_is_none_without_income(led):
+    post(led, date(2026, 6, 3), "rent",
+         ("Expenses:Housing:Rent", 180000), ("Assets:Checking", -180000))
+    data = reports.trend(led, count=2, today=date(2026, 8, 4))
+    assert all(row["savings_rate_pct"] is None for row in data["rows"])
+    assert data["totals"]["savings_rate_pct"] is None
+
+
+def test_trend_include_partial_labels_it_and_leaves_it_out_of_averages(led):
+    """Including the period in progress is allowed, but it must not drag the
+    average — that is how a four-day month becomes a 'collapse'."""
+    seed_trend(led)
+    post(led, date(2026, 9, 1), "rent",
+         ("Expenses:Housing:Rent", 180000), ("Assets:Checking", -180000))
+    data = reports.trend(led, count=3, today=date(2026, 9, 4),
+                         include_partial=True)
+    assert data["periods"][-1] == "2026-09"
+    assert data["rows"][-1]["partial"] is True
+    assert data["rows"][-1]["income"] == 0
+    assert data["excluded_partial"] is None
+    # Two complete months of 660000 income; the stub is not averaged in.
+    assert data["totals"]["complete_periods"] == 2
+    assert data["totals"]["average_income"] == 660000
+
+
+def test_trend_end_key_is_normalized(led):
+    seed_trend(led)
+    lower = reports.trend(led, count=2, grain="quarter", end_key="2026-q2",
+                          today=date(2026, 9, 4))
+    assert lower["periods"] == ["2026-Q1", "2026-Q2"]
+    short = reports.trend(led, count=1, end_key="2026-6",
+                          today=date(2026, 9, 4))
+    assert short["periods"] == ["2026-06"]
+
+
+def test_trend_rejects_a_bad_window(led):
+    from beans.utils import BeansError
+    with pytest.raises(BeansError, match="at least one period"):
+        reports.trend(led, count=0)
+    with pytest.raises(BeansError, match="invalid grain"):
+        reports.trend(led, count=3, grain="week")
+
+
+def test_trend_on_an_empty_ledger_is_empty_not_an_error(led):
+    data = reports.trend(led, count=3, today=date(2026, 9, 4))
+    assert data["accounts"] == []
+    assert all(row["income"] == 0 for row in data["rows"])
+    assert data["totals"]["net_income"] == 0
+
+
+def test_render_trend_names_what_it_left_out(led):
+    seed_trend(led)
+    data = reports.trend(led, count=6, today=date(2026, 9, 4))
+    text = reports.render_trend(data, 2, "$")
+    assert "TREND" in text
+    assert "2026-09 is still in progress and is excluded." in text
+    assert "Expenses:Food:Groceries" in text
+    assert "Average" in text
+
+
+def test_render_trend_flags_a_partial_row(led):
+    seed_trend(led)
+    data = reports.trend(led, count=3, today=date(2026, 9, 4),
+                         include_partial=True)
+    text = reports.render_trend(data, 2, "$")
+    assert "2026-09 *" in text
+    assert "excluded from the average" in text
+
+
+def test_trend_of_only_a_partial_period_says_nothing_is_complete(led):
+    """A one-period window that is still in progress must not imply its
+    average is comparable to anything."""
+    seed_trend(led)
+    post(led, date(2026, 9, 1), "rent",
+         ("Expenses:Housing:Rent", 180000), ("Assets:Checking", -180000))
+    data = reports.trend(led, count=1, today=date(2026, 9, 4),
+                         include_partial=True)
+    assert data["rows"][0]["partial"] is True
+    assert data["totals"]["complete_periods"] == 0
+    assert data["totals"]["average_expenses"] == 180000

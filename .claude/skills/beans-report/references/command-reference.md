@@ -3,11 +3,14 @@
 Only the commands this skill may run. Every one is read-only; anything that
 writes is refused by `beans_io.assert_read_only` before a subprocess starts.
 
+Requires **beans 1.1+** for `report trend`; the skill degrades to a slower
+path on older versions (see below) rather than failing.
+
 ## The shape of the surface
 
-This is the fact the whole skill is built around: **`beans` reports one period
-at a time.** Every statement except `networth` is a snapshot, and the only
-comparison on offer reaches exactly one period back.
+Almost every statement is a snapshot of one period, and `report income
+--compare` reaches exactly one period back. The two exceptions are the two the
+skill leans on.
 
 | Command | Shape | Time series? |
 |---|---|---|
@@ -17,10 +20,16 @@ comparison on offer reaches exactly one period back.
 | `analyze` | one period, plus position as of its end | no |
 | `budget report` | one period | no |
 | `forecast` | forward projection | forward only |
-| `networth` | month-end rollup | **yes** — but assets, liabilities and net worth only |
+| `networth` | month-end rollup | **yes** — assets, liabilities and net worth only |
+| **`report trend`** | income, expenses, net and every account across N periods | **yes** — this is the series |
 
-There is no expense-by-category series, no income series and no ratio series in
-the product. Building one is `series.py`'s entire job.
+`report trend` landed in beans 1.1 and is what `series.py` calls. Against an
+older beans it has no such command, so the script falls back to running
+`report income` once per period and assembling the same shape itself; the
+`source` field in its output says which path ran. Nothing downstream changes.
+
+**There is still no ratio series** — `analyze` is per-period — which is why
+`--ratios` costs one call per period.
 
 ## Period grammar
 
@@ -46,6 +55,32 @@ Most commands take `--json`. Two the skill needs do **not**:
   `closed_through` field carries the same fact.
 
 ## Commands and their JSON
+
+### `report trend [--periods N] [--grain month|quarter] [--end P]`
+```json
+{"report": "trend", "grain": "month", "period_count": 12,
+ "periods": ["2025-09", "…", "2026-08"],
+ "complete_through": "2026-08", "excluded_partial": "2026-09",
+ "rows": [{"period": "2025-09", "start": "2025-09-01", "end": "2025-09-30",
+           "partial": false, "income": "6000.00", "expenses": "2889.00",
+           "net_income": "3111.00", "savings_rate_pct": 51.9}],
+ "accounts": [{"account": "Expenses:Food:Groceries", "type": "expense",
+               "amounts": ["530.00", "…", "746.00"], "total": "…",
+               "average": "…", "first": "530.00", "last": "746.00",
+               "change": "216.00"}],
+ "totals": {"income": "…", "expenses": "…", "net_income": "…",
+            "complete_periods": 12, "average_income": "…",
+            "average_expenses": "…", "savings_rate_pct": 54.3}}
+```
+`accounts` is ranked by largest absolute change and holds one figure per
+period, in `periods` order. Accounts with no flow anywhere in the window are
+omitted entirely rather than carried as rows of zeros.
+
+The window ends at the last **complete** period; `excluded_partial` names the
+one left out, and is `null` when nothing was in progress (run on the last day
+of a month, for instance). `--include-partial` includes it, marks the row
+`"partial": true`, and still keeps it out of the averages — which is why
+`totals.complete_periods` can differ from `period_count`.
 
 ### `report income --period P [--compare]`
 ```json

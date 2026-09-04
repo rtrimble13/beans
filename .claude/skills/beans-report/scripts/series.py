@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Gather many periods of `beans` reports into one series.
 
-`beans` reports a period at a time: every statement except `networth` is a
-snapshot, and `--compare` reaches exactly one period back. Answering "is this
-drifting?" therefore means running the same report across N periods and lining
-the results up — which is all this script does. It runs read-only commands and
-copies the figures they print. **It performs no financial arithmetic**: every
-amount in the output came verbatim from a `beans --json` report, so a number
-here can always be traced back to a command you can re-run yourself.
+Since beans 1.1 the ledger builds the series itself — `beans report trend
+--json` — and this script simply asks for it. Against an older beans, which
+reports a period at a time, it falls back to running `report income` across N
+periods and lining the results up. Either way the output shape is identical,
+so `trend.py` cannot tell which path ran; the `source` field says.
+
+It runs read-only commands and copies the figures they print. **It performs
+no financial arithmetic**: every amount in the output came verbatim from a
+`beans --json` report, so a number here can always be traced back to a
+command you can re-run yourself.
 
 The current period is excluded by default. See `last_complete` in beans_io.
 
@@ -66,6 +69,36 @@ def anchor_month(key: str, grain: str) -> str:
     return f"{int(year):04d}-{int(quarter) * 3:02d}"
 
 
+def _native_trend(keys: list[str], grain: str, beans: str,
+                  ledger: str | None, errors: list[dict]) -> dict | None:
+    """`beans report trend` for exactly this window, or None on an older
+    beans that has no such command.
+
+    Only an argparse "invalid choice" means the command is missing. Any other
+    failure is a real problem with this ledger or window and is recorded, not
+    silently retried a slower way — falling back there would hide it.
+    """
+    if not keys:
+        return None
+    argv = ["report", "trend", "--periods", str(len(keys)),
+            "--grain", grain, "--end", keys[-1]]
+    try:
+        data = bio.run_json(argv, beans=beans, ledger=ledger)
+    except bio.BeansCommandError as exc:
+        if "invalid choice" in exc.stderr:
+            return None
+        errors.append({"period": "trend", "command": " ".join(argv),
+                       "error": exc.stderr or str(exc)})
+        return None
+    # A report that answered a different question than we asked is not a
+    # fallback case either; refuse it rather than mislabel the periods.
+    if data.get("periods") != keys:
+        errors.append({"period": "trend", "command": " ".join(argv),
+                       "error": f"unexpected window {data.get('periods')}"})
+        return None
+    return data
+
+
 def gather(*, count: int, grain: str, end_key: str, beans: str,
            ledger: str | None, want_ratios: bool, want_budgets: bool,
            today: date) -> dict:
@@ -81,47 +114,66 @@ def gather(*, count: int, grain: str, end_key: str, beans: str,
                            "error": exc.stderr or str(exc)})
             return None
 
-    # -- income statement per period (the backbone of the series) ------------
+    # -- the backbone of the series ------------------------------------------
+    # Prefer the ledger's own trend report: one call instead of N, and the
+    # partial-period rule is then enforced by beans rather than by us.
+    native = _native_trend(keys, grain, beans, ledger, errors)
     statements: dict[str, dict] = {}
-    for key in keys:
-        data = attempt(key, ["report", "income", "--period", key])
-        if data is not None:
-            statements[key] = data
-
-    # Union of every account seen, so each account has a value in every period.
-    # An account absent from a period's statement had no flow that period,
-    # which is a real zero — not a gap.
-    names: set[str] = set()
-    for data in statements.values():
-        names.update(data.get("income", {}))
-        names.update(data.get("expenses", {}))
-
-    accounts: dict[str, list[str | None]] = {}
-    for name in sorted(names):
-        row = []
+    if native is None:
         for key in keys:
-            data = statements.get(key)
-            if data is None:
-                row.append(None)          # the command failed; not a zero
-                continue
-            side = data.get("income", {}) if name.startswith("Income:") \
-                else data.get("expenses", {})
-            row.append(side.get(name, bio.money_str(bio.dec(0),
-                                                    config["decimals"])))
-        accounts[name] = row
+            data = attempt(key, ["report", "income", "--period", key])
+            if data is not None:
+                statements[key] = data
 
-    totals = {
-        field: [statements[key].get(field) if key in statements else None
-                for key in keys]
-        for field in ("total_income", "total_expenses", "net_income")
-    }
+    if native is not None:
+        accounts = {row["account"]: list(row["amounts"])
+                    for row in native.get("accounts", [])}
+        totals = {
+            field: [row[source] for row in native.get("rows", [])]
+            for field, source in (("total_income", "income"),
+                                  ("total_expenses", "expenses"),
+                                  ("net_income", "net_income"))
+        }
+        labels = {key: key for key in keys}
+    else:
+        # Union of every account seen, so each account has a value in every
+        # period. An account absent from a period's statement had no flow that
+        # period, which is a real zero — not a gap.
+        names: set[str] = set()
+        for data in statements.values():
+            names.update(data.get("income", {}))
+            names.update(data.get("expenses", {}))
+
+        accounts = {}
+        zero = bio.money_str(bio.dec(0), config["decimals"])
+        for name in sorted(names):
+            row = []
+            for key in keys:
+                data = statements.get(key)
+                if data is None:
+                    row.append(None)      # the command failed; not a zero
+                    continue
+                side = data.get("income", {}) if name.startswith("Income:") \
+                    else data.get("expenses", {})
+                row.append(side.get(name, zero))
+            accounts[name] = row
+
+        totals = {
+            field: [statements[key].get(field) if key in statements else None
+                    for key in keys]
+            for field in ("total_income", "total_expenses", "net_income")
+        }
+        labels = {key: statements[key].get("period")
+                  for key in keys if key in statements}
 
     # A period with no income and no expenses is structurally empty — usually
     # before the ledger's first transaction. Flag it; do not silently trend it.
-    empty = [key for key in keys
-             if key in statements
-             and bio.dec(statements[key].get("total_income")) == 0
-             and bio.dec(statements[key].get("total_expenses")) == 0]
+    empty = [
+        key for index, key in enumerate(keys)
+        if totals["total_income"][index] is not None
+        and bio.dec(totals["total_income"][index]) == 0
+        and bio.dec(totals["total_expenses"][index]) == 0
+    ]
 
     result = {
         "report": "beans-report/series",
@@ -135,8 +187,9 @@ def gather(*, count: int, grain: str, end_key: str, beans: str,
                              if end_key == bio.last_complete(today, grain)
                              else None),
         "periods": keys,
-        "labels": {key: statements[key].get("period")
-                   for key in keys if key in statements},
+        "source": ("beans report trend" if native is not None
+                   else "per-period income statements (older beans)"),
+        "labels": labels,
         "totals": totals,
         "accounts": accounts,
         "empty_periods": empty,
