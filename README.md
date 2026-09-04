@@ -57,10 +57,12 @@ personal finance.
   the ledger as read-only tools and a `review` prompt to Claude Desktop and
   Claude Code, so Claude can read your finances directly. Local-first,
   read-only by default. See [Use beans from Claude](#use-beans-from-claude-mcp).
-- **Agent skills for Claude Code (optional)** — two packaged workflows:
+- **Agent skills for Claude Code (optional)** — three packaged workflows:
   `beans-import` gets a bank CSV into the ledger, categorized and reconciled
   (it writes, after you approve a dry run); `beans-report` reads trends across
-  periods and writes a ranked briefing (strictly read-only). See
+  periods and writes a ranked briefing; `beans-economic` builds an economic
+  balance sheet from an interview and stress-tests it. The last two are
+  strictly read-only. See
   [Agent skills for Claude Code](#agent-skills-for-claude-code).
 - **No dependencies** — the core is pure Python standard library and fully
   offline; data lives in a single SQLite file you own. The optional extras add
@@ -627,6 +629,7 @@ alternatives. Pick by what you are trying to do:
 | ask from Claude Desktop, Claude Code, or any other MCP host | **`beans mcp`** | `[mcp]` extra + a host |
 | get a bank statement into the ledger, categorized and reconciled | **`beans-import` skill** | Claude Code |
 | understand what has been happening across months — trends, drift, inferences | **`beans-report` skill** | Claude Code |
+| build an economic balance sheet and find out what it depends on | **`beans-economic` skill** | Claude Code |
 
 The division is worth internalizing: the **server reads** (a period's numbers,
 on demand), the **skills do a job** (a statement in; a briefing out), and
@@ -719,13 +722,13 @@ start-to-finish walkthrough.
 
 ### Agent skills for Claude Code
 
-Two [agent skills](https://code.claude.com/docs) ship with this repository and
-install independently. Both drive the ordinary `beans` CLI, so their figures
+Three [agent skills](https://code.claude.com/docs) ship with this repository
+and install independently. All drive the ordinary `beans` CLI, so their figures
 are the ones your statements show.
 
 ```sh
 git clone https://github.com/rtrimble13/beans.git
-cd beans && ./scripts/install_skill.sh     # both, symlinked into ~/.claude/skills
+cd beans && ./scripts/install_skill.sh     # all, symlinked into ~/.claude/skills
 ./scripts/install_skill.sh beans-report    # or just one
 ```
 
@@ -792,10 +795,50 @@ The rules that matter most are the ones about not fooling you:
 It never writes to your ledger. Recommendations — a recalibrated budget, a
 paused rule to resume — are printed as commands for you to run.
 
-Setup and troubleshooting for both skills:
+Setup and troubleshooting for every skill:
 [`docs/claude-skill-setup.md`](docs/claude-skill-setup.md). Walkthroughs: the
 [import vignette](docs/vignettes/09-claude-skill.md) and the
 [trend-briefing vignette](docs/vignettes/10-reporting-skill.md).
+
+#### `beans-economic` — the future, and what it rests on
+
+`beans economic bs` will print an economic balance sheet. The catch is that
+exactly one of its lines — Financial Capital — comes from your books. The other
+five come from beliefs about your own life, and they move the answer far more
+than anything in the ledger does. On one worked example, holding the books
+completely constant:
+
+| Change one assumption | Economic net worth |
+|---|---:|
+| defaults | $512,714.80 |
+| income growth 3% | $1,069,479.92 |
+| **inflation 3%** | **−$114,889.96** |
+
+So this skill does the two things a single command cannot. It **interviews you**
+for the six forward-looking lines — when you stop working, what happens to
+spending then, pension, inheritance, bequests, other obligations — and writes a
+`beans economic` config document from your answers, validated by running beans
+against it before the file lands. Then it **stress-tests** the result:
+
+```
+build my economic balance sheet
+what would retiring five years earlier cost me?
+how sensitive is my plan to inflation?
+```
+
+It reports which assumption moves the answer most, the value at which economic
+net worth crosses zero (*"negative above 2.60% long-run inflation"*), which
+inputs your config has pinned so sweeping them proves nothing, and — for a
+decision question — the scenario delta decomposed by line, which is the cost of
+that decision in today's dollars.
+
+Three things it will not do: state a figure without the assumptions that
+produced it, let a line you never mentioned become a silent zero, or write to
+your ledger. It also refuses an ambiguous rate — `beans` reads a bare `0.03` as
+0.03%, not 3%, and that alone nearly doubles future consumption.
+
+Walkthrough: the
+[economic balance sheet vignette](docs/vignettes/11-economic-skill.md).
 
 ## Customization
 

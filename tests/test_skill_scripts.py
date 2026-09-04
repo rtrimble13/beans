@@ -26,15 +26,24 @@ import pytest
 SKILLS = Path(__file__).resolve().parent.parent / ".claude" / "skills"
 SCRIPTS = SKILLS / "beans-import" / "scripts"
 REPORT_SCRIPTS = SKILLS / "beans-report" / "scripts"
+ECONOMIC_SCRIPTS = SKILLS / "beans-economic" / "scripts"
 
 
 def _load(name, scripts=SCRIPTS):
-    """Import a script by path — it is not on the package path."""
+    """Import a script by path — it is not on the package path.
+
+    Registered under a skill-qualified key, and also under the bare name the
+    first time it is seen. Both matter: a script that does `import beans_io`
+    must get the *same* module object the test holds, or an exception raised
+    here will not be the class caught there — while two skills both shipping a
+    `preflight.py` must not displace each other."""
     if str(scripts) not in sys.path:
         sys.path.insert(0, str(scripts))
-    spec = importlib.util.spec_from_file_location(name, scripts / f"{name}.py")
+    key = f"{scripts.parent.name}.{name}"
+    spec = importlib.util.spec_from_file_location(key, scripts / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
+    sys.modules[key] = module
+    sys.modules.setdefault(name, module)
     spec.loader.exec_module(module)
     return module
 
@@ -47,6 +56,11 @@ beans_io = _load("beans_io", REPORT_SCRIPTS)
 series = _load("series", REPORT_SCRIPTS)
 trend = _load("trend", REPORT_SCRIPTS)
 preflight = _load("preflight", REPORT_SCRIPTS)
+
+econ_io = _load("econ_io", ECONOMIC_SCRIPTS)
+build_config = _load("build_config", ECONOMIC_SCRIPTS)
+sensitivity = _load("sensitivity", ECONOMIC_SCRIPTS)
+econ_preflight = _load("preflight", ECONOMIC_SCRIPTS)
 
 
 def write(tmp_path, name, body):
@@ -986,3 +1000,468 @@ def test_both_paths_produce_the_same_series(trending_ledger, tmp_path):
     for key in ("periods", "window", "excluded_partial", "accounts",
                 "totals", "empty_periods", "net_worth", "decimals"):
         assert a[key] == b[key], key
+
+
+# ============================================================================
+# beans-economic
+# ============================================================================
+
+# -- econ_io: the ambiguous-rate guard ---------------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("3%", "0.03"), ("3", "0.03"), ("3.0%", "0.03"),
+    ("0.5", "0.005"), ("0.5%", "0.005"),      # at the threshold, allowed
+    ("0.03%", "0.0003"),                       # explicit: taken at face value
+    ("0", "0"), ("0%", "0"),
+])
+def test_parse_rate_accepts_unambiguous_forms(text, expected):
+    assert econ_io.parse_rate(text) == Decimal(expected)
+
+
+@pytest.mark.parametrize("text", ["0.03", "0.04", "0.1", "0.25", "-0.02"])
+def test_parse_rate_refuses_a_bare_fraction(text):
+    """beans reads a bare number as a percentage, so `0.03` means 0.03%, not
+    3% — accepted silently, and it roughly doubles future consumption. The
+    two readings differ by 100x, so guessing is not an option."""
+    with pytest.raises(econ_io.AmbiguousRate, match="ambiguous"):
+        econ_io.parse_rate(text, allow_negative=True)
+
+
+def test_parse_rate_message_names_both_readings():
+    with pytest.raises(econ_io.AmbiguousRate) as excinfo:
+        econ_io.parse_rate("0.03")
+    message = str(excinfo.value)
+    assert "0.03%" in message and "3.00%" in message
+
+
+def test_parse_rate_rejects_a_negative_discount_rate():
+    with pytest.raises(econ_io.AmbiguousRate, match="negative"):
+        econ_io.parse_rate("-1%")
+    assert econ_io.parse_rate("-1%", allow_negative=True) == Decimal("-0.01")
+
+
+def test_rate_str_always_carries_a_percent_sign():
+    """A document this skill wrote must never be re-readable as a fraction."""
+    for value in ("0.03", "0.025", "0", "0.1234"):
+        assert econ_io.rate_str(Decimal(value)).endswith("%")
+    assert econ_io.rate_str(Decimal("0.03")) == "3%"
+    assert econ_io.rate_str(Decimal("0.025")) == "2.5%"
+
+
+def test_rate_str_round_trips_through_parse_rate():
+    for value in ("0.03", "0.025", "0.0175", "0"):
+        assert econ_io.parse_rate(econ_io.rate_str(Decimal(value))) \
+            == Decimal(value)
+
+
+# -- econ_io: read-only ------------------------------------------------------
+
+@pytest.mark.parametrize("argv", [
+    ["economic", "bs"], ["economic", "npv", "--file", "plan.md"],
+    ["ebs", "npv"], ["report", "income"], ["analyze"], ["tx", "list"],
+])
+def test_economic_read_only_commands_are_allowed(argv):
+    econ_io.assert_read_only(argv)
+
+
+@pytest.mark.parametrize("argv", [
+    ["economic", "create-template"],   # would clobber somebody's plan
+    ["tx", "add"], ["spend", "10", "Groceries"], ["import", "x.csv"],
+    ["config", "set", "economic.discount_rate", "5"],
+    ["period", "close", "2026-08"],
+])
+def test_economic_write_commands_are_refused(argv):
+    with pytest.raises(econ_io.NotReadOnly):
+        econ_io.assert_read_only(argv)
+
+
+def test_ledger_flag_precedes_the_subcommand():
+    """`--file` is global for the ledger; the economic commands take their own
+    `--file` for the config document, so the order is load-bearing."""
+    argv = econ_io.build_argv(["economic", "npv", "--file", "plan.md"],
+                              ledger="/tmp/l.db")
+    assert argv[:3] == ["beans", "--file", "/tmp/l.db"]
+    assert argv.index("--file") < argv.index("economic")
+
+
+# -- build_config: validation ------------------------------------------------
+
+def _answers(**lines):
+    return {"as_of": "2026-09-04",
+            "settings": {"discount_rate": "3%"},
+            "lines": lines}
+
+
+def test_a_line_nobody_mentioned_is_recorded_as_excluded():
+    """Silence must not become a modelling choice. An unmentioned pension is
+    zero, and the document has to say that it was a decision."""
+    spec = build_config.validate(_answers(income={"mode": "auto"}))
+    assert spec["lines"]["pension"]["mode"] == "none"
+    assert spec["lines"]["pension"]["note"] == "not discussed"
+    text = build_config.render(spec)
+    assert "EXCLUDED LINES" in text
+    assert "Pension / benefits — not discussed" in text
+
+
+def test_auto_is_refused_for_lines_the_ledger_cannot_estimate():
+    for kind in ("pension", "inheritance", "bequest", "other"):
+        with pytest.raises(build_config.InvalidAnswers, match="auto"):
+            build_config.validate(_answers(**{kind: {"mode": "auto"}}))
+    # …and allowed for the two that have a run-rate.
+    build_config.validate(_answers(income={"mode": "auto"},
+                                   consumption={"mode": "auto"}))
+
+
+def test_stream_needs_exactly_one_of_segments_or_flows():
+    with pytest.raises(build_config.InvalidAnswers, match="exactly one"):
+        build_config.validate(_answers(pension={"mode": "stream"}))
+    with pytest.raises(build_config.InvalidAnswers, match="exactly one"):
+        build_config.validate(_answers(pension={
+            "mode": "stream",
+            "segments": [{"from": "2030-01-01", "amount": "1"}],
+            "flows": [{"date": "2030-01-01", "amount": "1"}]}))
+
+
+def test_stream_dates_must_strictly_ascend():
+    with pytest.raises(build_config.InvalidAnswers, match="ascend"):
+        build_config.validate(_answers(income={
+            "mode": "stream",
+            "segments": [{"from": "2030-01-01", "amount": "100"},
+                         {"from": "2029-01-01", "amount": "0"}]}))
+
+
+def test_an_ambiguous_rate_anywhere_is_refused():
+    with pytest.raises(econ_io.AmbiguousRate):
+        build_config.validate({"settings": {"discount_rate": "0.03"}})
+    with pytest.raises(econ_io.AmbiguousRate):
+        build_config.validate(_answers(income={
+            "mode": "scalar", "amount": "100", "growth": "0.02"}))
+
+
+def test_unknown_lines_and_bad_modes_are_named():
+    with pytest.raises(build_config.InvalidAnswers, match="unknown line"):
+        build_config.validate(_answers(salary={"mode": "auto"}))
+    with pytest.raises(build_config.InvalidAnswers, match="expected"):
+        build_config.validate(_answers(income={"mode": "guess"}))
+
+
+def test_scalar_needs_an_amount_and_a_sane_horizon():
+    with pytest.raises(build_config.InvalidAnswers, match="needs an amount"):
+        build_config.validate(_answers(bequest={"mode": "scalar"}))
+    with pytest.raises(build_config.InvalidAnswers, match="at least 1"):
+        build_config.validate(_answers(bequest={"mode": "scalar",
+                                                "amount": "10", "years": 0}))
+
+
+# -- build_config: rendering -------------------------------------------------
+
+def test_rendered_headings_reach_all_six_lines_including_other():
+    """The stock `create-template` merges bequests and other obligations into
+    one heading, which beans matches to `bequest` — leaving the sixth line
+    unreachable. These headings are written apart on purpose."""
+    from beans.economic import _heading_kind
+    spec = build_config.validate(_answers())
+    text = build_config.render(spec)
+    headings = [line[3:].strip() for line in text.splitlines()
+                if line.startswith("## ") and line[3:].strip() != "Settings"]
+    assert len(headings) == 6
+    assert {_heading_kind(h.lower()) for h in headings} == {
+        "income", "consumption", "pension", "inheritance", "bequest", "other"}
+
+
+def test_a_lump_sum_table_carries_no_growth_column():
+    """That column is exactly how beans tells a monthly schedule from one-off
+    dated flows; adding it would silently reinterpret an inheritance."""
+    spec = build_config.validate(_answers(inheritance={
+        "mode": "stream", "flows": [{"date": "2040-01-01", "amount": "50000"}]}))
+    text = build_config.render(spec)
+    block = text.split("## Expected inheritance")[1].split("## ")[0]
+    assert "| Date | Amount |" in block
+    assert "Growth" not in block
+
+
+def test_a_monthly_schedule_does_carry_a_growth_column():
+    spec = build_config.validate(_answers(pension={
+        "mode": "stream",
+        "segments": [{"from": "2046-09-01", "amount": "2400",
+                      "growth": "2%"}]}))
+    block = build_config.render(spec).split("## Pension / benefits")[1]
+    assert "| From (date) | Amount (monthly) | Growth |" in block
+
+
+def test_every_rendered_rate_carries_a_percent_sign():
+    spec = build_config.validate({
+        "settings": {"discount_rate": "3%", "income_growth": "1%",
+                     "inflation": "2%"},
+        "lines": {"income": {"mode": "scalar", "amount": "6600",
+                             "growth": "1.5%"}}})
+    text = build_config.render(spec)
+    for row in text.splitlines():
+        if row.startswith("| discount_rate") or row.startswith("| inflation") \
+                or row.startswith("| income_growth"):
+            assert "%" in row
+
+
+def test_a_note_containing_a_pipe_cannot_become_a_table_row():
+    spec = build_config.validate(_answers(
+        bequest={"mode": "none", "note": "a | b | c"}))
+    assert "|" not in spec["lines"]["bequest"]["note"]
+
+
+# -- sensitivity: the reading of the sweeps ----------------------------------
+
+def test_base_assumptions_are_read_back_from_the_report():
+    """Not from what we think we passed — flags, config and defaults interact,
+    and the report is the only authority on what was actually used."""
+    base = sensitivity.base_assumptions({
+        "discount_rate_pct": 3.0, "income_growth_pct": 1.0,
+        "inflation_pct": 2.0, "work_months": 300, "live_months": 480})
+    assert base["discount_rate"] == Decimal("0.03")
+    assert base["work_years"] == 25
+    assert base["live_years"] == 40
+
+
+def _sweep_with(monkeypatch, worths, parameter="inflation"):
+    """Drive sweep() over canned economic net worths, one per grid point."""
+    values = iter(worths)
+    monkeypatch.setattr(
+        sensitivity, "run",
+        lambda *a, **k: {"economic_net_worth": str(next(values))})
+    return sensitivity.sweep(parameter, {"work_years": 25, "live_years": 40},
+                             config=None, beans="beans", ledger=None,
+                             decimals=2)
+
+
+def test_a_monotonic_sweep_reports_its_span(monkeypatch):
+    out = _sweep_with(monkeypatch, [500, 400, 300, 200, 100])
+    assert out["monotonic"] is True
+    assert out["span"] == "400.00"
+    assert out["inert"] is False
+    assert "note" not in out
+
+
+def test_a_flat_sweep_is_inert_not_robust(monkeypatch):
+    """A stream schedule carries its own growth, so the global setting stops
+    feeding it. No movement means disconnected, not stable."""
+    out = _sweep_with(monkeypatch, [250, 250, 250, 250, 250])
+    assert out["inert"] is True
+    assert out["span"] == "0.00"
+
+
+def test_a_non_monotonic_sweep_is_flagged_and_names_its_peak(monkeypatch):
+    """The discount rate discounts both sides over different horizons, so
+    economic net worth peaks in the middle of the band."""
+    out = _sweep_with(monkeypatch, [470, 490, 512, 503, 488, 448, 385],
+                      parameter="discount_rate")
+    assert out["monotonic"] is False
+    assert "not monotonic" in out["note"]
+    assert "3%" in out["note"]           # the peak's grid value
+
+
+def test_sensitivity_ranks_drivers_by_span_and_drops_inert_ones():
+    sweeps = [
+        {"parameter": "inflation", "span": "971534.25", "inert": False},
+        {"parameter": "discount_rate", "span": "64536.44", "inert": False},
+        {"parameter": "income_growth", "span": "0.00", "inert": True},
+        {"parameter": "work_years", "span": "724726.15", "inert": False},
+    ]
+    ranked = sorted((s for s in sweeps if not s["inert"]),
+                    key=lambda s: econ_io.dec(s["span"]), reverse=True)
+    assert [s["parameter"] for s in ranked] == [
+        "inflation", "work_years", "discount_rate"]
+
+
+# -- beans-economic end to end against a real ledger -------------------------
+
+@pytest.fixture
+def economic_ledger(tmp_path):
+    """A year of salary and spending — enough for a run-rate."""
+    from beans.cli import main
+    path = str(tmp_path / "econ.db")
+    assert main(["-f", path, "init"]) == 0
+    assert main(["-f", path, "tx", "add", "--date", "2025-09-01",
+                 "--desc", "Opening", "--post", "Assets:Checking", "20000",
+                 "--post", "Equity:Opening Balances"]) == 0
+    for index in range(12):
+        year, month = (2025, 9 + index) if index < 4 else (2026, index - 3)
+        assert main(["-f", path, "earn", "6000", "Salary",
+                     "--date", f"{year}-{month:02d}-15"]) == 0
+        assert main(["-f", path, "spend", "3000", "Rent",
+                     "--date", f"{year}-{month:02d}-02"]) == 0
+    return path
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_built_config_parses_and_reaches_all_six_lines(economic_ledger,
+                                                       tmp_path):
+    """The document is validated by running beans against it before it lands,
+    so this asserts the guarantee end to end — including Other Obligations,
+    which the stock template has no section for."""
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({
+        "as_of": "2026-09-04",
+        "settings": {"discount_rate": "3%", "income_growth": "1%",
+                     "inflation": "2%"},
+        "lines": {
+            "income": {"mode": "stream", "segments": [
+                {"from": "2026-09-01", "amount": "6000", "growth": "1%"},
+                {"from": "2046-09-01", "amount": "0"}]},
+            "consumption": {"mode": "auto"},
+            "pension": {"mode": "stream", "segments": [
+                {"from": "2046-09-01", "amount": "2400", "growth": "2%"}]},
+            "inheritance": {"mode": "stream", "flows": [
+                {"date": "2040-01-01", "amount": "50000"}]},
+            "bequest": {"mode": "scalar", "amount": "200", "years": 40},
+            "other": {"mode": "scalar", "amount": "500", "years": 10,
+                      "note": "Care costs."},
+        }}))
+    out = tmp_path / "plan.md"
+    assert build_config.main([str(answers), "-o", str(out),
+                              "-f", economic_ledger]) == 0
+
+    from beans.cli import main
+    from beans.ledger import Ledger
+    from beans import economic as econ
+    led = Ledger(economic_ledger)
+    inputs = econ.parse_config(out.read_text(), led)
+    data = econ.economic_balance_sheet(led, inputs)
+    # All four assumed lines carry value, so none was silently dropped.
+    assert data["human_capital"] > 0
+    assert data["other_benefits"] > 0        # pension + inheritance
+    assert data["future_consumption"] > 0
+    assert data["other_obligations"] > 0     # bequest + other
+    led.close()
+    assert main(["-f", economic_ledger, "economic", "bs",
+                 "--file", str(out), "--json"]) == 0
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_build_config_refuses_to_clobber_an_existing_plan(economic_ledger,
+                                                          tmp_path):
+    answers = tmp_path / "a.json"
+    answers.write_text(json.dumps({"settings": {"discount_rate": "3%"}}))
+    out = tmp_path / "plan.md"
+    assert build_config.main([str(answers), "-o", str(out),
+                              "-f", economic_ledger]) == 0
+    original = out.read_text()
+    assert build_config.main([str(answers), "-o", str(out),
+                              "-f", economic_ledger]) == 2
+    assert out.read_text() == original
+    assert build_config.main([str(answers), "-o", str(out), "--force",
+                              "-f", economic_ledger]) == 0
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_sensitivity_finds_the_sign_flip_and_ranks_the_drivers(
+        economic_ledger, tmp_path):
+    out = tmp_path / "sens.json"
+    assert sensitivity.main(["-f", economic_ledger, "-o", str(out)]) == 0
+    data = json.loads(out.read_text())
+
+    assert data["base"]["economic_net_worth"]
+    assert set(data["drivers"]) <= set(sensitivity.FLAGS)
+    # `sweeps` keeps request order; `drivers` is the ranking, so follow it.
+    by_name = {s["parameter"]: econ_io.dec(s["span"]) for s in data["sweeps"]}
+    spans = [by_name[name] for name in data["drivers"]]
+    assert spans == sorted(spans, reverse=True)
+    assert len(spans) >= 2
+
+    # This household spends half what it earns, so a high enough inflation
+    # assumption must eventually put it under water.
+    flip = data["sign_flips"].get("inflation")
+    assert flip is not None
+    assert flip["boundary"].endswith("%")
+    assert flip["direction"] == "negative above"
+
+    rate = next(s for s in data["sweeps"]
+                if s["parameter"] == "discount_rate")
+    assert rate["monotonic"] is False       # both sides, different horizons
+    assert "not monotonic" in rate["note"]
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_sensitivity_reports_inert_parameters_on_a_pinned_plan(
+        economic_ledger, tmp_path):
+    """With human capital pinned to an explicit schedule, the global growth
+    and work-year settings no longer feed it. That is disconnection, not
+    robustness, and it has to be reported as such."""
+    answers = tmp_path / "a.json"
+    answers.write_text(json.dumps({
+        "settings": {"discount_rate": "3%"},
+        "lines": {"income": {"mode": "stream", "segments": [
+            {"from": "2026-09-01", "amount": "6000"},
+            {"from": "2046-09-01", "amount": "0"}]},
+            "consumption": {"mode": "auto"}}}))
+    plan = tmp_path / "plan.md"
+    assert build_config.main([str(answers), "-o", str(plan),
+                              "-f", economic_ledger]) == 0
+    out = tmp_path / "sens.json"
+    assert sensitivity.main(["--file", str(plan), "-f", economic_ledger,
+                             "--sweep", "income_growth,work_years,inflation",
+                             "-o", str(out)]) == 0
+    data = json.loads(out.read_text())
+    assert "income_growth" in data["inert"]
+    assert "work_years" in data["inert"]
+    assert "inflation" not in data["inert"]
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_sensitivity_compares_two_plans(economic_ledger, tmp_path):
+    def plan(name, retire):
+        answers = tmp_path / f"{name}.json"
+        answers.write_text(json.dumps({
+            "settings": {"discount_rate": "3%"},
+            "lines": {"income": {"mode": "stream", "segments": [
+                {"from": "2026-09-01", "amount": "6000"},
+                {"from": retire, "amount": "0"}]},
+                "consumption": {"mode": "auto"}}}))
+        out = tmp_path / f"{name}.md"
+        assert build_config.main([str(answers), "-o", str(out),
+                                  "-f", economic_ledger]) == 0
+        return str(out)
+
+    base, early = plan("base", "2046-09-01"), plan("early", "2041-09-01")
+    out = tmp_path / "sens.json"
+    assert sensitivity.main(["--file", base, "--compare", early,
+                             "--sweep", "inflation", "-f", economic_ledger,
+                             "-o", str(out)]) == 0
+    rows = {r["field"]: r for r in
+            json.loads(out.read_text())["comparison"]["rows"]}
+    # Retiring five years earlier forgoes earnings, so both fall.
+    assert rows["human_capital"]["delta"].startswith("-")
+    assert rows["economic_net_worth"]["delta"].startswith("-")
+    # The books are the books; only the assumed lines move.
+    assert rows["financial_capital"]["delta"] == "+0.00"
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_economic_preflight_reports_projection_leverage(economic_ledger):
+    report = econ_preflight.check(
+        beans="beans", ledger=economic_ledger, lookback=12, work_years=25,
+        live_years=40, today=date(2026, 9, 4))
+    assert report["ok"] is True
+    assert report["accounting_net_worth"]
+    assert report["auto_basis"]["monthly_income"] == "6000.00"
+    leverage = report["projection_leverage"]
+    assert leverage["projected_months"] == 300
+    assert leverage["ratio"].startswith("1:")
+    # The two entry points disagree on growth/inflation; preflight says so.
+    assert report["defaults_in_force"]["cli"] != \
+        report["defaults_in_force"]["template"]
+
+
+@pytest.mark.skipif(shutil.which("beans") is None,
+                    reason="the `beans` console script is not installed")
+def test_economic_preflight_warns_when_the_horizon_is_not_longer(
+        economic_ledger):
+    report = econ_preflight.check(
+        beans="beans", ledger=economic_ledger, lookback=12, work_years=40,
+        live_years=40, today=date(2026, 9, 4))
+    assert any("stops spending when they stop earning" in warning
+               for warning in report["warnings"])

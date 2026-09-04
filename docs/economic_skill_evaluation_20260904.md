@@ -15,6 +15,29 @@ how much the output moves when the assumptions move — against a seeded
 
 ---
 
+## Status — accepted and built
+
+Built on this branch, scoped as recommended: `.claude/skills/beans-economic/`
+(`SKILL.md`, three references, four scripts, nine evals), covered by 54 new
+tests in `tests/test_skill_scripts.py`, plus `install_skill.sh`, README,
+`docs/claude-skill-setup.md` and a walkthrough vignette
+(`docs/vignettes/11-economic-skill.md`).
+
+What landed matches the verdict below rather than the original ask: the skill
+interviews and stress-tests, and explicitly hands narration back to
+`beans ai review --focus economic`. `econ_io.parse_rate` refuses the ambiguous
+`0.03` form; `build_config.py` records every excluded line with its reason,
+writes the sixth line the stock template cannot reach, and proves its output
+parses before the file lands; `sensitivity.py` ranks drivers by span, bisects
+the sign-flip boundary, and reports *inert* inputs separately from small ones.
+
+**The three product findings remain open** and are deliberately not papered
+over by the skill — the skill reports the default divergence rather than hiding
+it. They are worth their own change: align the two default paths, guard the
+ambiguous percent in `parse_config`, and reconsider the single discount rate.
+
+---
+
 ## Verdict
 
 **Yes — but rotated about 90° from the description.**

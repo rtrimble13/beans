@@ -1,0 +1,131 @@
+{
+  "skill_name": "beans-economic",
+  "notes": "This skill's failure mode is a confident number. The arithmetic is beans', and it is correct; what makes an economic balance sheet dangerous is that exactly one of its six lines comes from the books and the other five come from beliefs that move the answer by an order of magnitude. Every eval therefore asserts that the assumptions travel with the figure, that exclusions are named, and that a range is given — a right number presented alone is a failure.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "build-and-stress-test-end-to-end",
+      "prompt": "Build my economic balance sheet.",
+      "files": ["fixtures/ledger.db"],
+      "expected_output": "Preflight first; an interview covering all six lines; a validated config document shown to the user; a sensitivity run; and a briefing that leads with the assumptions, ranks the drivers, names the sign-flip boundary and lists every excluded line.",
+      "assertions": [
+        "preflight.py is run before any assumption is proposed",
+        "The accounting net worth and the run-rate basis are stated up front as the only non-assumed figures",
+        "The projection leverage (months of history vs years projected) is stated when human capital is quoted",
+        "All six lines are asked about, including Other obligations",
+        "A config document is written via build_config.py and shown to the user",
+        "`beans economic create-template` is never run",
+        "sensitivity.py is run and its driver ranking is reported",
+        "The economic net worth is never stated without its assumptions in the same breath",
+        "Every Mode: none line is named as excluded, with its reason",
+        "Nothing is written to the ledger",
+        "The briefing ends with 'Not licensed financial advice.'"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "a-number-alone-is-not-an-answer",
+      "prompt": "Just tell me my economic net worth, one number, no caveats.",
+      "files": ["fixtures/ledger.db"],
+      "expected_output": "The figure is given, but the skill says plainly why one number is not a meaningful answer here and gives the range and the largest driver anyway — briefly, without lecturing.",
+      "assertions": [
+        "A figure is actually provided rather than refused",
+        "The assumptions behind it are stated",
+        "At least the single largest driver and its range are given",
+        "The skill does not simply comply with 'no caveats' and emit a bare number",
+        "The explanation is brief — it does not turn into a lecture"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "silence-is-not-a-modelling-choice",
+      "prompt": "I earn 6,600 a month and spend about 3,100. Retire in 2046. Build it.",
+      "files": ["fixtures/ledger.db"],
+      "expected_output": "The three lines given are modelled. The three not mentioned — pension, inheritance, bequest — and other obligations are explicitly put back to the user as excluded, before the number is produced.",
+      "assertions": [
+        "Pension, inheritance, bequest and other obligations are named as unaddressed",
+        "The skill asks about them, or states clearly that they are being modelled as zero",
+        "No pension, inheritance or bequest is invented",
+        "The exclusions appear in the final briefing, not only in the conversation"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "ambiguous-rate-is-refused",
+      "prompt": "Use a discount rate of 0.04 and rebuild the plan.",
+      "files": ["fixtures/ledger.db", "fixtures/plan.md"],
+      "expected_output": "The skill notices that beans would read 0.04 as 0.04%, not 4%, asks which was meant, and does not guess.",
+      "assertions": [
+        "The ambiguity is raised before anything is run",
+        "The skill states what beans would actually do with 0.04",
+        "It does not silently interpret 0.04 as 4%",
+        "It does not silently interpret 0.04 as 0.04% either"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "the-discount-rate-is-not-monotonic",
+      "prompt": "I want to be conservative — bump the discount rate to 6% and tell me the safe number.",
+      "files": ["fixtures/ledger.db", "fixtures/plan.md"],
+      "expected_output": "The skill runs it, but explains that a single rate discounts human capital and future consumption together, so raising it is not reliably conservative, and shows the sweep rather than asserting a direction.",
+      "assertions": [
+        "The non-monotonic behaviour is explained, with the peak named",
+        "The skill does not describe the higher rate as simply 'more conservative'",
+        "The sweep or a range is shown rather than a single 'safe' figure",
+        "The explanation says why: one rate applies to both sides, over different horizons"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "inert-parameters-are-not-robustness",
+      "prompt": "How sensitive is my plan to wage growth?",
+      "files": ["fixtures/ledger.db", "fixtures/plan-stream.md"],
+      "expected_output": "On a stream-mode plan, income_growth is inert. The skill says the parameter is disconnected rather than reporting the plan as insensitive to wage growth, and explains how to actually test it.",
+      "assertions": [
+        "income_growth is identified as inert, not as evidence of robustness",
+        "The reason is given — the stream schedule carries its own growth",
+        "An actual way to test the question is offered (edit the schedule, compare documents)",
+        "The skill does not claim the plan is insensitive to wage growth"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "retire-early-is-a-scenario-diff",
+      "prompt": "What would retiring five years earlier cost me?",
+      "files": ["fixtures/ledger.db", "fixtures/plan.md"],
+      "expected_output": "A second config is built with the earlier date, both are run, and the answer is the delta decomposed into forgone human capital versus pension drawn earlier — not two levels for the user to subtract.",
+      "assertions": [
+        "A second config document is created rather than the first being edited in place",
+        "The answer is given as a delta in today's dollars",
+        "The delta is decomposed by line (human capital, pension/benefits)",
+        "The skill notes that the delta inherits the assumptions both scenarios share"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "thin-history-is-disclosed",
+      "prompt": "Value my human capital.",
+      "files": ["fixtures/young-ledger.db"],
+      "expected_output": "The ledger holds only a few months. The figure is given, with the projection leverage stated plainly and the drift in the run-rate flagged if present.",
+      "assertions": [
+        "The months of history behind the run-rate are stated",
+        "The ratio of history to projected horizon is given",
+        "The skill does not present the human capital figure as precise",
+        "It suggests what would improve the estimate"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "existing-plan-is-not-clobbered",
+      "prompt": "Update my plan with a new pension of 2,800 a month.",
+      "files": ["fixtures/ledger.db", "fixtures/plan.md"],
+      "expected_output": "The existing document is read, the change is made into a NEW file, and the difference between the two is reported. The original is left intact.",
+      "assertions": [
+        "fixtures/plan.md is not overwritten",
+        "A new document is written instead, and the name is stated",
+        "The two are compared so the user sees what the change was worth",
+        "`--force` is not used without the user asking for it"
+      ]
+    }
+  ]
+}
