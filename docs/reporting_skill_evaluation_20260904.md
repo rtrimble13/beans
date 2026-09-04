@@ -5,6 +5,7 @@
 report features to summarize trends and make inferences? If so, how should it
 be built?
 **Branch:** `claude/reporting-skill-evaluation-n4csum`
+**Companion:** [`ai_surface_consolidation_20260904.md`](ai_surface_consolidation_20260904.md) — whether `beans ai` and the MCP server should be removed in favour of this skill (verdict: no).
 **Method:** read the reporting surface (`reports.py`, `analysis.py`,
 `forecast.py`, `budget.py`, `_toolcore/`, `mcp/server.py`, `ai/`), then
 exercised every claim below against a purpose-built 14-month ledger.
