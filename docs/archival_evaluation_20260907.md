@@ -15,6 +15,44 @@ which quietly change.
 
 ---
 
+## Status — accepted and built
+
+Built on this branch as `beans archive`, scoped as recommended: compaction
+is the default, `--drop-detail` is the explicit opt-out, and the
+`history_begins` prerequisite (§5) landed with it. `beans/archive.py` plus
+`Ledger.history_begins` / `Ledger.detail_begins`, clamping in `networth`,
+`report trend`, `forecast`, `analyze` and `status`, 39 tests in
+`tests/test_archive.py`, a MANUAL section and a README section.
+
+Measured on the same 25-year ledger this evaluation used, the shipped
+command reproduces §4 exactly: **28,564 transactions → 300, 4.57 MB → 0.46
+MB**, with `report bs`, `report is`, `report cf`, `report trial`,
+`report trend`, `networth`, `analyze` and `forecast` byte-for-byte
+identical before and after.
+
+Three deviations from the recommendation, each deliberate:
+
+- **No backup gate.** The recommendation said refuse without a fresh
+  `backup`/`export json`. That requirement came from an in-place framing.
+  The command writes out-of-place and never touches the source, so the
+  source *is* the full-fidelity archive of record — a gate would have been
+  ceremony around a guarantee already held. The output says so instead.
+- **The archive closes the books through the cutover.** Not in the original
+  list, but it follows: the detail that would justify editing an archived
+  month no longer exists in that file. A close already standing past the
+  cutover is preserved rather than reset.
+- **The merchant warning is computed the classifier's way** — same two-leg
+  filter, same `merchant_key` normalization — rather than by raw
+  description, and skips the descriptions `beans` generates itself
+  (`Spending: Rent` is an account restated, not a merchant). On the §4
+  fixture it names `COUNTY TAX COLLECTOR` and nothing else.
+
+**Still open:** default row limits on `register`, `tx list` and `search`
+(§1a), and the `beans restore` commit-per-transaction problem (Findings,
+below). Both are independent of archival and neither is affected by it.
+
+---
+
 ## Verdict
 
 **The problem is real, the proposed shape of the fix is not, and there is a

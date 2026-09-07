@@ -46,7 +46,14 @@ def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
     current_liabilities = sum(cur for cur, _non in liab_split.values())
     noncurrent_liabilities = sum(non for _cur, non in liab_split.values())
 
-    months = months_in_range(start, end) if start else None
+    # Monthly rates divide by the months that could have carried activity,
+    # not by the months the caller asked about. A period reaching back
+    # before this ledger's history would otherwise spread real spending
+    # over imaginary months and flatter every rate that depends on it —
+    # the savings rate, the runway, debt-to-income.
+    begins = led.history_begins
+    rate_start = max(start, begins) if start and begins else start
+    months = months_in_range(rate_start, end) if rate_start else None
     monthly_expenses = expenses / months if months else None
     monthly_income = income / months if months else None
 
@@ -64,6 +71,10 @@ def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
         "period": label,
         "start": start,
         "end": end,
+        # When the requested period reaches back further than the ledger
+        # does, say so: the rates below describe the shorter span.
+        "rate_start": rate_start if rate_start != start else None,
+        "history_begins": begins,
         "income": income,
         "expenses": expenses,
         "net_income": net,
@@ -104,7 +115,19 @@ def analyze(led: Ledger, start: date | None, end: date, label: str) -> dict:
 
 def render_analysis(data: dict, decimals: int, symbol: str) -> str:
     lines = [bold("FINANCIAL ANALYSIS"),
-             f"For the period: {data['period']}", ""]
+             f"For the period: {data['period']}"]
+    if data.get("rate_start"):
+        begins = data["history_begins"].isoformat()
+        if data["rate_start"] > data["end"]:
+            lines.append(f"This period ends before the ledger's history "
+                         f"begins ({begins}); no rate can be computed.")
+        else:
+            lines.append(
+                f"Monthly rates are over {data['rate_start'].isoformat()} to "
+                f"{data['end'].isoformat()}: this ledger's history begins "
+                f"{begins}."
+            )
+    lines.append("")
 
     def pct(value) -> str:
         return f"{value:.1f}%" if value is not None else "n/a"

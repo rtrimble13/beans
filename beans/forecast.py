@@ -16,7 +16,7 @@ from beans.budget import budget_accounts
 from beans.ledger import Ledger
 from beans.models import AccountType
 from beans.recurring import pending_occurrences
-from beans.render import Table, bold, money
+from beans.render import Table, bold, money, red
 from beans.utils import add_months, month_bounds
 
 
@@ -76,12 +76,24 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
              use_recurring: bool = False) -> dict:
     if method not in ("average", "trend"):
         raise ValueError(f"unknown forecast method: {method}")
+    requested_lookback = lookback
     today = date.today()
     accounts = [a for a in led.accounts()
                 if a.type in (AccountType.INCOME, AccountType.EXPENSE)]
-    # History from the last `lookback` complete months.
+    # History from the last `lookback` complete months — but never from
+    # before the ledger has any. Months that predate it are not months of
+    # zero income and zero spending, and averaging them in projects a
+    # household that neither earns nor spends.
     this_month_start = month_bounds(today.year, today.month)[0]
     hist_start = add_months(this_month_start, -lookback)
+    begins = led.history_begins
+    if begins:
+        earliest = month_bounds(begins.year, begins.month)[0]
+        if earliest > hist_start:
+            hist_start = earliest
+    lookback = max(
+        (this_month_start.year - hist_start.year) * 12
+        + this_month_start.month - hist_start.month, 0)
     hist_end = this_month_start - timedelta(days=1)
     hist_keys = _month_keys(hist_start, lookback)
     flows = led.monthly_flows([a.id for a in accounts], hist_start, hist_end)
@@ -152,6 +164,8 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
         "report": "forecast",
         "method": method,
         "lookback_months": lookback,
+        "lookback_requested": requested_lookback,
+        "history_begins": begins,
         "horizon_months": months,
         "use_budget": use_budget,
         "use_recurring": use_recurring,
@@ -175,8 +189,24 @@ def render_forecast(data: dict, decimals: int, symbol: str) -> str:
     lines = [
         bold("FORECAST"),
         f"Horizon: {data['horizon_months']} months | Basis: {src}",
-        "",
     ]
+    # Say when the basis is thinner than asked for. A projection off two
+    # months of history is a different object from one off twelve, and the
+    # table alone cannot tell them apart.
+    if data.get("lookback_months", 0) < data.get("lookback_requested", 0):
+        begins = data.get("history_begins")
+        detail = (f"; this ledger's history begins {begins.isoformat()}"
+                  if begins else "")
+        if not data["lookback_months"]:
+            lines.append(red(
+                "No complete month of history to project from"
+                f"{detail} — the figures below carry no historical basis."))
+        else:
+            lines.append(
+                f"Only {data['lookback_months']} of the "
+                f"{data['lookback_requested']} requested months are "
+                f"available{detail}.")
+    lines.append("")
     table = Table(headers=["Month", "Income", "Expenses", "Net",
                            "Proj. Cash", "Proj. Net Worth"],
                   align="lrrrrr")

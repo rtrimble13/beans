@@ -41,6 +41,7 @@ class Money:
 
 # Report-dict keys whose integer values are counts, not money.
 NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
+                  "lookback_requested", "months_requested",
                   "posted_count", "number", "term_months",
                   "payments_remaining", "work_months", "live_months",
                   # reconcile --statement: row counts, CSV line numbers and
@@ -58,7 +59,16 @@ NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   "imported", "skipped",
                   # trend: how many periods the series spans, and how
                   # many of them had fully elapsed.
-                  "period_count", "complete_periods"}
+                  "period_count", "complete_periods",
+                  # archive: transaction/posting counts and file sizes in
+                  # bytes — everything the archive report reports is a
+                  # count of something, never an amount.
+                  "archived_transactions", "archived_postings",
+                  "summary_transactions", "retained_transactions",
+                  "archived_sightings", "source_bytes", "out_bytes",
+                  # reports that clamp their window to the ledger's own
+                  # history: how many periods were dropped for predating it.
+                  "periods_omitted", "months_omitted"}
 
 
 def jsonify(value, decimals: int):
@@ -469,6 +479,19 @@ def net_worth_trend(led: Ledger, months: int, end: date | None = None) -> dict:
     this_month_start = month_bounds(end.year, end.month)[0]
     first_shown = add_months(this_month_start, -(months - 1))
 
+    # Never walk back past the ledger's own history. A month before the
+    # first transaction is not a month of zero net worth — it is a month
+    # this ledger cannot speak to, and printing it as 0.00 turns "no data"
+    # into a claim about the household.
+    begins = led.history_begins
+    omitted = 0
+    if begins:
+        earliest = month_bounds(begins.year, begins.month)[0]
+        if earliest > first_shown:
+            omitted = _months_between(first_shown, earliest)
+            first_shown = earliest
+    shown = max(months - omitted, 0)
+
     assets = liabilities = 0
     # Seed running totals with everything before the displayed window.
     for ym in sorted(deltas):
@@ -479,7 +502,7 @@ def net_worth_trend(led: Ledger, months: int, end: date | None = None) -> dict:
 
     rows = []
     prev_net = None
-    for i in range(months):
+    for i in range(shown):
         m_start = add_months(first_shown, i)
         ym = f"{m_start:%Y-%m}"
         assets += deltas.get(ym, {}).get("asset", 0)
@@ -494,12 +517,36 @@ def net_worth_trend(led: Ledger, months: int, end: date | None = None) -> dict:
             "change": (net - prev_net) if prev_net is not None else 0,
         })
         prev_net = net
-    return {"report": "net_worth_trend", "months": months, "rows": rows}
+    return {
+        "report": "net_worth_trend",
+        "months": shown,
+        "months_requested": months,
+        "months_omitted": omitted,
+        "history_begins": begins,
+        "rows": rows,
+    }
+
+
+def _months_between(start: date, end: date) -> int:
+    """Whole calendar months from `start` to `end` (both month starts)."""
+    return (end.year - start.year) * 12 + end.month - start.month
 
 
 def render_net_worth_trend(data: dict, decimals: int, symbol: str) -> str:
-    lines = [bold("NET WORTH TREND"),
-             f"Last {data['months']} months (month-end balances)", ""]
+    lines = [bold("NET WORTH TREND")]
+    begins = data.get("history_begins")
+    if not data["months"]:
+        lines += [f"Nothing to show: this window ends before the ledger's "
+                  f"history begins ({begins.isoformat()}).", ""]
+        return "\n".join(lines)
+    plural = "" if data["months"] == 1 else "s"
+    lines.append(f"Last {data['months']} month{plural} (month-end balances)")
+    if data.get("months_omitted"):
+        lines.append(
+            f"{data['months_omitted']} earlier month(s) omitted: this "
+            f"ledger's history begins {begins.isoformat()}."
+        )
+    lines.append("")
     table = Table(headers=["Month", "Assets", "Liabilities", "Net Worth",
                            "Change"], align="lrrrr")
     for row in data["rows"]:
@@ -555,6 +602,16 @@ def trend(led: Ledger, count: int = 12, grain: str = "month",
     keys = [shift_period(end_key, offset, grain)
             for offset in range(-(count - 1), 1)]
     bounds = {key: parse_period(key)[:2] for key in keys}
+    # Drop periods that end before the ledger has any history. They would
+    # render as a run of zeros indistinguishable from real ones — a flat
+    # line the reader has every reason to take for a finding. The last
+    # period is always kept, so the report degrades to a short window
+    # rather than to nothing at all.
+    begins = led.history_begins
+    omitted = 0
+    if begins:
+        keys = [key for key in keys if bounds[key][1] >= begins] or keys[-1:]
+        omitted = count - len(keys)
     window_start = bounds[keys[0]][0]
     window_end = min(bounds[keys[-1]][1], today)
 
@@ -626,6 +683,8 @@ def trend(led: Ledger, count: int = 12, grain: str = "month",
         "grain": grain,
         "period_count": len(keys),
         "periods": keys,
+        "periods_omitted": omitted,
+        "history_begins": begins,
         "complete_through": complete,
         # Name the period left out, so a reader knows why the series stops
         # where it does rather than assuming the ledger is behind. Only when
@@ -658,6 +717,12 @@ def render_trend(data: dict, decimals: int, symbol: str) -> str:
     if data.get("excluded_partial"):
         lines.append(f"{data['excluded_partial']} is still in progress and is "
                      "excluded.")
+    if data.get("periods_omitted"):
+        lines.append(
+            f"{data['periods_omitted']} earlier {grain}(s) omitted: this "
+            f"ledger's history begins "
+            f"{data['history_begins'].isoformat()}."
+        )
     lines.append("")
 
     def pct(value) -> str:
