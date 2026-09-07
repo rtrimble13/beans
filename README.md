@@ -37,6 +37,12 @@ personal finance.
   statements stay in your base (functional) currency.
 - **Export & backup** — the whole ledger as JSON or flat CSV, and
   consistent point-in-time SQLite snapshots.
+- **Archival** — `beans archive` rolls the books forward into a new, much
+  smaller file when the register gets long, replacing each archived month
+  with one summary entry. Every period report — balance sheet, income
+  statement, cash flows, trend, net worth, forecast, every ratio — returns
+  exactly the same figures; a 25-year ledger loses 93% of its size and none
+  of its answers. The original is never touched.
 - **Goals** — savings targets and debt payoff dates with required-monthly
   math, plus period close to lock historical books.
 - **Ease of use** — a `beans status` dashboard, `spend` / `earn` / `transfer`
@@ -493,6 +499,43 @@ between machines or restoring from a text backup.
 Backups use SQLite's online backup API, so they're consistent even if
 taken mid-write. Restore the binary snapshot by just pointing at it
 (`beans -f backup.db`); use `restore` for the portable JSON form.
+
+## Archiving into a new ledger
+
+Keep books long enough and the register gets long — twenty-five years of
+daily household activity is around 28,000 transactions. `beans` reads that
+in under a tenth of a second, so this is never urgent, but at some point
+you simply want a fresh, smaller file to work in.
+
+```sh
+beans archive --through 2025-12-31 --dry-run          # look first
+beans archive --through 2025-12-31 -o ~/.beans/ledger-2026.db
+```
+
+Rather than throwing the history away, `archive` **compacts** it: every
+transaction on or before the cutover becomes one summary transaction per
+month, carrying that month's per-account totals. Because every aggregate
+`beans` computes is a sum, and a sum of monthly sums is the monthly sum,
+the balance sheet, income statement, statement of cash flows, `report
+trend`, `networth`, `forecast` and every ratio in `analyze` come back
+**identical** — retained earnings included. On a 25-year ledger that is
+28,564 transactions down to 300, and 4.6 MB down to 0.34 MB. Accounts,
+budgets, recurring rules, import rules, goals, loans, lots, prices and FX
+rates all carry over untouched, and the archive verifies every balance and
+every monthly flow against the source before it writes the file.
+
+What you give up is line-item detail for archived months — payees,
+descriptions, individual amounts — so `search`, `register`, `tx show` and
+`reconcile` no longer reach back past the cutover, and mid-month windows
+become approximate rather than exact. `--dry-run` also names the merchants
+whose categorization history is about to disappear, so you can pin them
+down with `beans rule add` first.
+
+The source ledger is never modified: it keeps every line item and is the
+archive of record, so keep it. There is a `--drop-detail` mode that keeps
+balances only, in the shape most people first imagine — it is not the
+default because it takes the savings rate, liquidity runway, trend and
+forecast with it.
 
 Projects monthly income, expenses, net savings, cash position, and net worth,
 with a breakdown of which accounts drive the projection and from what basis

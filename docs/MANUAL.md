@@ -40,11 +40,12 @@ shape of the tool and want the details on a specific command.
 24. [`loan` — amortizing loans](#loan--amortizing-loans)
 24. [`currency` — multi-currency and FX](#currency--multi-currency-and-fx)
 25. [`export` / `backup` / `restore`](#export--backup--restore)
-26. [`completions` — shell completions](#completions--shell-completions)
-27. [`ai` — AI assistant (optional)](#ai--ai-assistant-optional)
-28. [`mcp` — MCP server (optional)](#mcp--mcp-server-optional)
-29. [Releasing & publishing](#releasing--publishing)
-30. [General best practices](#general-best-practices)
+26. [`archive` — rolling the ledger forward](#archive--rolling-the-ledger-forward)
+27. [`completions` — shell completions](#completions--shell-completions)
+28. [`ai` — AI assistant (optional)](#ai--ai-assistant-optional)
+29. [`mcp` — MCP server (optional)](#mcp--mcp-server-optional)
+30. [Releasing & publishing](#releasing--publishing)
+31. [General best practices](#general-best-practices)
 
 ---
 
@@ -1841,6 +1842,110 @@ beans -f new.db restore ledger.json
 - Never point `restore` at an existing ledger expecting it to merge or
   overwrite — it only works into an empty ledger; create a fresh file with
   `-f` first if you need to test a restore.
+
+---
+
+## `archive` — rolling the ledger forward
+
+```
+beans archive --through DATE [--out FILE] [--drop-detail] [--dry-run]
+              [--force] [--json]
+```
+
+| Flag | Description |
+|---|---|
+| `--through DATE` | Archive everything dated on or before `DATE`. Required, and must be in the past. |
+| `-o, --out FILE` | Destination ledger. Default: alongside the source, named for the cutover (`ledger-from-2025-12-31.db`). |
+| `--drop-detail` | Keep only balances, discarding the monthly flows too. Prefer the default — see below. |
+| `--dry-run` | Report what would be archived and write nothing. |
+| `--force` | Overwrite the destination if it exists. |
+| `--json` | Machine-readable output. |
+
+A register grows for as long as you keep books. Twenty-five years of daily
+household activity is around 28,000 transactions, and while `beans` reads
+that perfectly happily, at some point you want a fresh, smaller file to
+work in — a new "volume", the way a company opens new books each year.
+
+`archive` writes that file. Every transaction on or before the cutover is
+replaced by **one summary transaction per month**, whose postings are that
+month's per-account totals. The source ledger is never modified.
+
+```sh
+beans archive --through 2025-12-31 --dry-run     # look first
+beans archive --through 2025-12-31 -o ~/.beans/ledger-2026.db
+```
+
+### What is preserved, and why
+
+Everything that reports by period. `balances`, `flows`, `monthly_flows`
+and `monthly_type_totals` are all sums, and a sum of monthly sums is the
+monthly sum — so the balance sheet, income statement, statement of cash
+flows, `report trend`, `networth`, `forecast` and every ratio in
+`analyze` return **identical figures** before and after, including
+retained earnings. On a 25-year ledger that costs about 93% of the file:
+28,564 transactions become 300, and 4.6 MB becomes 0.34 MB.
+
+Every side table comes along untouched: your chart of accounts, budgets,
+recurring rules, import rules, goals, loans, investment lots, prices and
+exchange rates. Only the register is compacted.
+
+The archive verifies itself before it hands you the file: every balance
+as of the cutover and every archived month's per-account flow must match
+the source exactly, or nothing is written.
+
+### What is lost
+
+Line-item detail for archived months — payees, descriptions, individual
+amounts, cleared flags and void history — and with it `search`, `tx show`,
+`register` and `reconcile` for those months. Two consequences worth
+planning around:
+
+- **Mid-month questions become approximate.** A month's activity now sits
+  on a single date, so a window that starts or ends mid-month no longer
+  ties to the cent. Every default in `beans` is period-aligned, so this
+  does not bite in ordinary use. (The grain is deliberately not
+  configurable: weekly buckets straddle month ends and would break
+  `trend`, `networth` and `forecast`, which is worse than the edge it
+  fixes.)
+- **`beans categorize` forgets archived merchants.** The classifier learns
+  from two-legged transactions, and a summary has many legs. `--dry-run`
+  lists the merchants whose only evidence is about to be archived — the
+  annual ones especially, since an archive every January is exactly out of
+  phase with a bill paid every January. Write those down with `rule add`
+  *before* archiving; import rules survive intact.
+
+The archive also closes the books through the cutover, since the detail
+that would justify editing those months no longer exists in that file.
+`period reopen` lifts it if you must.
+
+### `--drop-detail`
+
+Keeps balances only, as a single opening entry, discarding the monthly
+flows. Assets, liabilities and net worth are unchanged and total equity is
+unchanged, but cumulative net income is closed into contributed capital:
+`Retained Earnings` becomes zero and `Opening Balances` absorbs it.
+
+This is the version most people picture when they imagine "a new file with
+just the balances", and it is not the default because of what it costs:
+with no flows behind the cutover there is no savings rate, no liquidity
+runway, no trend and no forecast for the archived span. `beans` records
+`history_begins` so those reports say "history begins 2025-12-31" instead
+of printing zeros — but the answers are genuinely gone. Use it only when
+you want the balances and nothing else.
+
+### Best practices
+
+- **Keep the source ledger.** It is the full-detail archive of record, and
+  `archive` is only safe because it never touches it. Put it somewhere you
+  keep things — most jurisdictions want line-level records for three to
+  seven years.
+- Run `--dry-run` first, and act on the merchant warnings with `rule add`
+  before the real run.
+- Archive on a month boundary (`--through 2025-12-31`), not mid-month, so
+  no summary covers a partial period.
+- There is no hurry. `beans` reports a 25-year ledger in well under a
+  tenth of a second; archive when you *want* a fresh file, not because the
+  register is "too big".
 
 ---
 

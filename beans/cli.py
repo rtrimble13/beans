@@ -13,6 +13,7 @@ from pathlib import Path
 from beans import __version__
 from beans import (
     analysis,
+    archive,
     budget,
     classify,
     completions,
@@ -889,6 +890,10 @@ def cmd_period_status(args) -> int:
         print(f"Books closed through {closed.isoformat()}")
     else:
         print("The books are open (no period close set).")
+    detail = led.detail_begins
+    if detail:
+        print(f"Line-item detail begins {detail.isoformat()} — earlier "
+              "months are archived monthly summaries.")
     return 0
 
 
@@ -1223,6 +1228,26 @@ def cmd_export(args) -> int:
         print(f"Exported {args.format.upper()} to {path}")
     else:
         print(content, end="")
+    return 0
+
+
+def cmd_archive(args) -> int:
+    """Roll the ledger forward into a smaller file. Read-only against the
+    source: the original keeps the full detail and is the archive of
+    record, and the compacted ledger is written somewhere new."""
+    led = _open(args)
+    through = parse_date(args.through)
+    if args.dry_run:
+        data = archive.plan(led, through, drop_detail=args.drop_detail)
+    else:
+        out = args.out or led.path.with_name(
+            f"{led.path.stem}-from-{through.isoformat()}"
+            f"{led.path.suffix or '.db'}"
+        )
+        data = archive.archive(led, through, out,
+                               drop_detail=args.drop_detail,
+                               force=args.force)
+    _emit(args, led, data, archive.render_plan)
     return 0
 
 
@@ -2114,6 +2139,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", "-o", metavar="FILE",
                    help="write to a file instead of stdout")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser(
+        "archive",
+        help="roll the ledger forward into a smaller file",
+        description="Write a new, much smaller ledger in which every "
+                    "transaction on or before --through is replaced by one "
+                    "summary transaction per month. Period-aligned reports "
+                    "— balance sheet, income statement, cash flows, trend, "
+                    "net worth, forecast, ratios — are unchanged; what is "
+                    "lost is line-item detail for those months. The source "
+                    "ledger is never modified and keeps the full detail.")
+    p.add_argument("--through", required=True, metavar="DATE",
+                   help="archive everything dated on or before DATE")
+    p.add_argument("--out", "-o", metavar="FILE",
+                   help="destination ledger (default: alongside the source, "
+                        "named for the cutover)")
+    p.add_argument("--drop-detail", action="store_true",
+                   help="keep only balances, discarding the monthly flows "
+                        "too. Blinds every rate, trend and forecast for the "
+                        "archived span — prefer the default")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would be archived and write nothing")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite the destination if it exists")
+    _add_json_arg(p)
+    p.set_defaults(func=cmd_archive)
 
     p = sub.add_parser("backup",
                        help="consistent point-in-time copy of the ledger")

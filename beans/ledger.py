@@ -462,6 +462,39 @@ class Ledger:
             self.remove_loan(account)
         self.update_account(account, closed=True)
 
+    # -- history horizon ---------------------------------------------------
+
+    @property
+    def history_begins(self) -> date | None:
+        """The earliest date this ledger has flow data for, or None when
+        it has no transactions at all.
+
+        Normally that is simply the first transaction. It is stored in
+        `meta` only when something moved it — `beans archive
+        --drop-detail` keeps balances but discards the flows behind them,
+        so the register really does start later than the books do.
+
+        Reports that walk backwards over fixed windows need this. Without
+        it a month before the ledger existed is indistinguishable from a
+        month in which nothing happened, and `networth`, `trend` and
+        `forecast` all report the second when they mean the first.
+        """
+        value = self.get_meta("history_begins")
+        if value:
+            return date.fromisoformat(value)
+        row = self.db.execute(
+            "SELECT MIN(date) AS first FROM transactions WHERE void = 0"
+        ).fetchone()
+        return date.fromisoformat(row["first"]) if row["first"] else None
+
+    @property
+    def detail_begins(self) -> date | None:
+        """The earliest date this ledger holds line-item detail for, when
+        that is later than its flow history — set by `beans archive`,
+        whose summaries carry a month's totals but not its rows."""
+        value = self.get_meta("detail_begins")
+        return date.fromisoformat(value) if value else None
+
     # -- period close ------------------------------------------------------
 
     @property

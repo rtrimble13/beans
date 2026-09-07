@@ -20,7 +20,16 @@ def status_report(led: Ledger, today: date | None = None) -> dict:
     today = today or date.today()
     raw = led.balances(as_of=today)
     position = led.position(raw=raw)
-    position_30d = led.position(as_of=today - timedelta(days=30))
+    # The 30-day delta is only a delta if the ledger existed 30 days ago.
+    # Otherwise the comparison point is a net worth of zero, and the whole
+    # opening balance reads as a month's gain — which is how a freshly
+    # archived or freshly created ledger announces a windfall it did not
+    # have.
+    begins = led.history_begins
+    thirty_days_ago = today - timedelta(days=30)
+    has_baseline = begins is not None and begins <= thirty_days_ago
+    position_30d = (led.position(as_of=thirty_days_ago) if has_baseline
+                    else None)
 
     month_start, _month_end = month_bounds(today.year, today.month)
     flows = led.flows(month_start, today)
@@ -48,8 +57,10 @@ def status_report(led: Ledger, today: date | None = None) -> dict:
         "as_of": today,
         "cash": position["cash"],
         "net_worth": position["net_worth"],
-        "net_worth_change_30d": (position["net_worth"]
-                                 - position_30d["net_worth"]),
+        "net_worth_change_30d": (
+            position["net_worth"] - position_30d["net_worth"]
+            if position_30d else None),
+        "history_begins": begins,
         "month": f"{today:%B %Y}",
         "month_income": income,
         "month_expenses": expenses,
@@ -72,12 +83,16 @@ def render_status(data: dict, decimals: int, symbol: str) -> str:
     lines = [bold(f"BEANS STATUS — {data['as_of'].isoformat()}"), ""]
     table = Table(align="lr")
     change = data["net_worth_change_30d"]
-    arrow = "+" if change >= 0 else ""
     table.add("Cash & equivalents", money(data["cash"], decimals, symbol))
-    table.add("Net worth",
-              f"{money(data['net_worth'], decimals, symbol)}  "
-              f"({arrow}{money(change, decimals, symbol, color_negative=False)}"
-              " over 30 days)")
+    if change is None:
+        table.add("Net worth", money(data["net_worth"], decimals, symbol))
+    else:
+        arrow = "+" if change >= 0 else ""
+        table.add("Net worth",
+                  f"{money(data['net_worth'], decimals, symbol)}  "
+                  f"({arrow}"
+                  f"{money(change, decimals, symbol, color_negative=False)}"
+                  " over 30 days)")
     table.add("", "")
     table.add(bold(f"This month ({data['month']})"), "")
     table.add("  Income", money(data["month_income"], decimals, symbol))
