@@ -106,6 +106,14 @@ def _natural_by_name(led: Ledger, raw: dict[int, int],
     return out
 
 
+def _heading(data: dict, default: str, subtitle: str) -> list[str]:
+    """A statement's heading: its title, its date line, and any notes the
+    caller attached. This is how `beans forecast --report bs` says it is a
+    projection while keeping the historical statement's layout exactly."""
+    return [bold(data.get("title", default)), subtitle,
+            *data.get("notes", []), ""]
+
+
 def _tree_rows(table: Table, amounts: dict[str, int], decimals: int,
                indent: str = "  ", extra=None) -> None:
     tree = strip_shared_root(rollup(amounts), amounts)
@@ -151,7 +159,8 @@ def income_statement(led: Ledger, start: date | None, end: date,
 
 
 def render_income_statement(data: dict, decimals: int, symbol: str) -> str:
-    lines = [bold("INCOME STATEMENT"), f"For the period: {data['period']}", ""]
+    lines = _heading(data, "INCOME STATEMENT",
+                     f"For the period: {data['period']}")
     total_income = data["total_income"]
 
     def pct(_name: str, amount: int) -> str:
@@ -261,7 +270,8 @@ def balance_sheet(led: Ledger, as_of: date, classified: bool = True) -> dict:
 
 
 def render_balance_sheet(data: dict, decimals: int, symbol: str) -> str:
-    lines = [bold("BALANCE SHEET"), f"As of: {data['as_of'].isoformat()}", ""]
+    lines = _heading(data, "BALANCE SHEET",
+                     f"As of: {data['as_of'].isoformat()}")
     table = Table(align="lr")
 
     def block(title: str, amounts: dict[str, int], total: int) -> None:
@@ -370,8 +380,8 @@ def cash_flow_statement(led: Ledger, start: date | None, end: date,
 
 
 def render_cash_flow_statement(data: dict, decimals: int, symbol: str) -> str:
-    lines = [bold("STATEMENT OF CASH FLOWS"),
-             f"For the period: {data['period']}", ""]
+    lines = _heading(data, "STATEMENT OF CASH FLOWS",
+                     f"For the period: {data['period']}")
     table = Table(align="lr")
     for key, title in (("operating", "Operating Activities"),
                        ("investing", "Investing Activities"),

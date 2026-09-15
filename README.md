@@ -22,7 +22,10 @@ personal finance.
 - **Budgeting** — per-account budgets at weekly/monthly/quarterly/yearly
   cadence, with budget-vs-actual variance reports over any period.
 - **Forecasting** — project income, expenses, cash, and net worth forward from
-  historical averages, a linear trend, or your budgets.
+  historical averages, a linear trend, or your budgets — and, with
+  `--report`, a **projected balance sheet, income statement or statement of
+  cash flows** in the same format `beans report` prints, balancing to the
+  cent and tying to one another.
 - **Analysis** — savings rate, liquidity runway, debt-to-assets,
   debt-to-income, and expense composition.
 - **Reconciliation** — clear postings against bank statements and reconcile
@@ -40,9 +43,10 @@ personal finance.
 - **Archival** — `beans archive` rolls the books forward into a new, much
   smaller file when the register gets long, replacing each archived month
   with one summary entry. Every period report — balance sheet, income
-  statement, cash flows, trend, net worth, forecast, every ratio — returns
-  exactly the same figures; a 25-year ledger loses 93% of its size and none
-  of its answers. The original is never touched.
+  statement, cash flows, trend, net worth, the forecast's income and expense
+  projections, every ratio — returns exactly the same figures; a 25-year
+  ledger loses 93% of its size and none of its answers. The original is
+  never touched.
 - **Goals** — savings targets and debt payoff dates with required-monthly
   math, plus period close to lock historical books.
 - **Ease of use** — a `beans status` dashboard, `spend` / `earn` / `transfer`
@@ -391,9 +395,24 @@ beans forecast                          # 6 months from 6-month averages
 beans forecast --months 12 --method trend --lookback 12
 beans forecast --use-budget             # budgets drive accounts that have them
 beans forecast --use-recurring          # scheduled txns at exact amounts/dates
+
+beans forecast -n 1  --report bs        # the balance sheet one month out
+beans forecast -n 12 --report is        # the next twelve months' income
+beans forecast -n 6  --report all       # all three statements
 ```
 
 Source priority per account: recurring schedule > budget > history.
+
+`--report` projects *balanced transactions*, not totals, and hands them to
+the same code that renders your historical statements. It reads how each
+category was funded straight off your books (that groceries go on the card,
+that salary lands in checking), projects the transfers an income statement
+cannot see (a savings sweep, a brokerage contribution, a card payoff), and
+amortizes any loan on its schedule. The statements balance and articulate:
+net income over the window is the rise in retained earnings, and net change
+in cash is the change in the cash line. Investments are held at their last
+mark and foreign balances at the last known rate — a forecast projects your
+behaviour, not the market's, and says so on its face.
 
 ## Goals
 
@@ -901,7 +920,9 @@ pytest
 ```
 
 The codebase is small and orthogonal: `ledger.py` (SQLite double-entry core),
-`reports.py` (statements), `budget.py`, `forecast.py`, `analysis.py`,
+`reports.py` (statements), `budget.py`, `forecast.py`,
+`proforma.py` (projected transactions and the read-only overlay the
+projected statements are built on), `analysis.py`,
 `loans.py` (amortization), `economic.py` (economic balance sheet / NPV),
 `importer.py`, `cli.py`. All amounts are stored as
 integers in minor units;

@@ -5,167 +5,134 @@ Two projection methods over per-account monthly history:
   trend   — least-squares linear trend extrapolated forward
 
 With --use-budget, accounts that have budgets use the budgeted monthly
-amount instead of history, letting plans drive the projection.
+amount instead of history, letting plans drive the projection. With
+--use-recurring, scheduled transactions are projected at their exact
+amounts and dates.
+
+The projection itself lives in `proforma.py`, which builds balanced
+transactions rather than totals. This module reads them two ways: as the
+month-by-month summary `beans forecast` has always printed, and — via
+`forecast_statement` — as a projected balance sheet, income statement or
+statement of cash flows, built by the same `reports.py` code that renders
+the historical ones.
 """
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-
-from beans.budget import budget_accounts
+from beans import proforma, reports
 from beans.ledger import Ledger
 from beans.models import AccountType
-from beans.recurring import pending_occurrences
+from beans.proforma import ProForma
 from beans.render import Table, bold, money, red
-from beans.utils import add_months, month_bounds
+from beans.utils import BeansError
+
+# `--report` values, and the statement each one builds. The tokens are the
+# ones `beans report` already takes, so `forecast --report bs` and
+# `report bs` read alike.
+STATEMENT_KINDS = {
+    "income": "is", "is": "is",
+    "balance": "bs", "bs": "bs",
+    "cashflow": "cf", "cf": "cf",
+}
+REPORT_CHOICES = ["summary", *STATEMENT_KINDS, "all"]
+STATEMENT_ORDER = ("is", "bs", "cf")
 
 
-def _month_keys(start: date, count: int) -> list[str]:
-    return [f"{add_months(start, i):%Y-%m}" for i in range(count)]
+def _basis(pf: ProForma) -> str:
+    parts = []
+    if pf.use_recurring:
+        parts.append("recurring schedule")
+    if pf.use_budget:
+        parts.append("budgets")
+    parts.append(f"{pf.lookback_months}-month history ({pf.method})")
+    return " > ".join(parts)
 
 
-def _project(history: list[int], method: str, steps: int) -> list[int]:
-    if not history:
-        return [0] * steps
-    if method == "average" or len(history) < 2:
-        avg = round(sum(history) / len(history))
-        return [avg] * steps
-    # Least-squares fit of flow against month index, extrapolated. The
-    # fitted line is y = mean_y + slope * (x - mean_x); future month x is
-    # (n - 1 + step), so the offset from the mean must subtract mean_x.
-    n = len(history)
-    xs = range(n)
-    mean_x = (n - 1) / 2
-    mean_y = sum(history) / n
-    denom = sum((x - mean_x) ** 2 for x in xs)
-    slope = sum((x - mean_x) * (y - mean_y)
-                for x, y in zip(xs, history)) / denom
-    return [round(mean_y + slope * (n - 1 + step - mean_x))
-            for step in range(1, steps + 1)]
-
-
-def _recurring_projections(
-    led: Ledger, future_keys: list[str], horizon_end: date,
-) -> dict[int, list[int]]:
-    """Per-account monthly amounts from active recurring rules over the
-    horizon. Accounts covered here are projected from their schedule
-    exactly, instead of from history or budgets."""
-    key_index = {key: i for i, key in enumerate(future_keys)}
-    out: dict[int, list[int]] = {}
-    accounts = {a.id: a for a in led.accounts(include_closed=True)}
-    for rec in led.recurrings():
-        if not rec.active:
-            continue
-        # pending_occurrences carries the MAX_RUN_PER_RULE runaway guard.
-        for due in pending_occurrences(rec, horizon_end):
-            idx = key_index.get(f"{due:%Y-%m}")
-            if idx is None:
-                continue
-            for p in rec.postings:
-                account = accounts.get(p.account_id)
-                if account and account.type in (AccountType.INCOME,
-                                                AccountType.EXPENSE):
-                    series = out.setdefault(
-                        account.id, [0] * len(future_keys))
-                    series[idx] += p.amount * account.type.natural_sign
+def _month_buckets(pf: ProForma, accounts: dict) -> dict[str, dict[str, int]]:
+    """Projected flows per calendar month: income and expenses in natural
+    signs, and the raw deltas to cash and to net worth. Rolling these
+    forward is what makes `Proj. Cash` a real cash figure rather than an
+    assumption that every dollar of net income stays in the bank."""
+    out: dict[str, dict[str, int]] = {}
+    for txn in pf.txns:
+        bucket = out.setdefault(f"{txn.date:%Y-%m}",
+                                {"income": 0, "expenses": 0,
+                                 "cash": 0, "net_worth": 0})
+        for p in txn.postings:
+            account = accounts[p.account_id]
+            if account.type is AccountType.INCOME:
+                bucket["income"] -= p.amount
+            elif account.type is AccountType.EXPENSE:
+                bucket["expenses"] += p.amount
+            elif account.type in (AccountType.ASSET, AccountType.LIABILITY):
+                # Net worth is assets minus liabilities; in raw
+                # debit-positive terms that is the sum of both.
+                bucket["net_worth"] += p.amount
+                if account.is_cash:
+                    bucket["cash"] += p.amount
     return out
 
 
 def forecast(led: Ledger, months: int = 6, method: str = "average",
              lookback: int = 6, use_budget: bool = False,
              use_recurring: bool = False) -> dict:
-    if method not in ("average", "trend"):
-        raise ValueError(f"unknown forecast method: {method}")
-    requested_lookback = lookback
-    today = date.today()
-    accounts = [a for a in led.accounts()
-                if a.type in (AccountType.INCOME, AccountType.EXPENSE)]
-    # History from the last `lookback` complete months — but never from
-    # before the ledger has any. Months that predate it are not months of
-    # zero income and zero spending, and averaging them in projects a
-    # household that neither earns nor spends.
-    this_month_start = month_bounds(today.year, today.month)[0]
-    hist_start = add_months(this_month_start, -lookback)
-    begins = led.history_begins
-    if begins:
-        earliest = month_bounds(begins.year, begins.month)[0]
-        if earliest > hist_start:
-            hist_start = earliest
-    lookback = max(
-        (this_month_start.year - hist_start.year) * 12
-        + this_month_start.month - hist_start.month, 0)
-    hist_end = this_month_start - timedelta(days=1)
-    hist_keys = _month_keys(hist_start, lookback)
-    flows = led.monthly_flows([a.id for a in accounts], hist_start, hist_end)
-    budgets = budget_accounts(led) if use_budget else {}
+    pf = proforma.project(led, months=months, method=method,
+                          lookback=lookback, use_budget=use_budget,
+                          use_recurring=use_recurring)
+    accounts = {a.id: a for a in led.accounts(include_closed=True)}
+    buckets = _month_buckets(pf, accounts)
+    empty = {"income": 0, "expenses": 0, "cash": 0, "net_worth": 0}
 
-    future_keys = _month_keys(this_month_start, months + 1)[1:]
-    horizon_end = add_months(this_month_start, months + 1) - timedelta(days=1)
-    recurring = (_recurring_projections(led, future_keys, horizon_end)
-                 if use_recurring else {})
+    position = led.position(as_of=pf.base_date)
+    cash_now, net_worth_now = position["cash"], position["net_worth"]
+    # The part-elapsed current month is projected too, but it is not a
+    # month: it lands in the opening position, never in a monthly row.
+    stub = buckets.get(f"{pf.base_date:%Y-%m}", empty)
+    cash = cash_now + stub["cash"]
+    net_worth = net_worth_now + stub["net_worth"]
 
-    # Source priority per account: recurring schedule > budget > history.
-    projections: dict[int, list[int]] = {}
-    for account in accounts:
-        if account.id in recurring:
-            projections[account.id] = recurring[account.id]
+    rows, cumulative = [], 0
+    for key in pf.future_keys:
+        bucket = buckets.get(key, empty)
+        cash += bucket["cash"]
+        net_worth += bucket["net_worth"]
+        net = bucket["income"] - bucket["expenses"]
+        cumulative += net
+        rows.append({"month": key, "income": bucket["income"],
+                     "expenses": bucket["expenses"], "net": net,
+                     "projected_cash": cash,
+                     "projected_net_worth": net_worth})
+
+    # Per-account detail (the projection's drivers) for the summary.
+    horizon = set(pf.future_keys)
+    totals: dict[int, int] = {}
+    for txn in pf.txns:
+        if f"{txn.date:%Y-%m}" not in horizon:
             continue
-        if account.id in budgets:
-            projections[account.id] = [budgets[account.id]] * months
-            continue
-        history = [
-            flows.get((account.id, key), 0) * account.type.natural_sign
-            for key in hist_keys
-        ]
-        projections[account.id] = _project(history, method, months)
-    by_type: dict[str, list[int]] = {"income": [], "expense": []}
-    rows = []
-    for i, key in enumerate(future_keys):
-        income = sum(projections[a.id][i] for a in accounts
-                     if a.type is AccountType.INCOME)
-        expenses = sum(projections[a.id][i] for a in accounts
-                       if a.type is AccountType.EXPENSE)
-        by_type["income"].append(income)
-        by_type["expense"].append(expenses)
-        rows.append({"month": key, "income": income, "expenses": expenses,
-                     "net": income - expenses})
-
-    position = led.position(as_of=today)
-    cash_now = position["cash"]
-    net_worth_now = position["net_worth"]
-
-    cumulative = 0
-    for row in rows:
-        cumulative += row["net"]
-        row["projected_cash"] = cash_now + cumulative
-        row["projected_net_worth"] = net_worth_now + cumulative
-
-    # Per-account detail (top expense drivers) for the summary.
+        for p in txn.postings:
+            account = accounts[p.account_id]
+            if account.type in proforma.FLOW_TYPES:
+                totals[account.id] = totals.get(account.id, 0) \
+                    + p.amount * account.type.natural_sign
     detail = []
-    for account in accounts:
-        total = sum(projections[account.id])
+    for driver in pf.drivers:
+        total = totals.get(driver.account.id, 0)
         if total:
-            if account.id in recurring:
-                source = "recurring"
-            elif account.id in budgets:
-                source = "budget"
-            else:
-                source = method
             detail.append({
-                "account": account.name,
-                "type": account.type.value,
+                "account": driver.account.name,
+                "type": driver.account.type.value,
                 "monthly_avg": round(total / months),
                 "total": total,
-                "source": source,
+                "source": driver.source,
             })
     detail.sort(key=lambda d: (d["type"], -abs(d["total"])))
 
     return {
         "report": "forecast",
         "method": method,
-        "lookback_months": lookback,
-        "lookback_requested": requested_lookback,
-        "history_begins": begins,
+        "lookback_months": pf.lookback_months,
+        "lookback_requested": pf.lookback_requested,
+        "history_begins": pf.history_begins,
         "horizon_months": months,
         "use_budget": use_budget,
         "use_recurring": use_recurring,
@@ -174,6 +141,9 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
         "months": rows,
         "accounts": detail,
         "total_projected_net": cumulative,
+        "stub_income": stub["income"],
+        "stub_expenses": stub["expenses"],
+        "warnings": pf.warnings,
     }
 
 
@@ -193,19 +163,8 @@ def render_forecast(data: dict, decimals: int, symbol: str) -> str:
     # Say when the basis is thinner than asked for. A projection off two
     # months of history is a different object from one off twelve, and the
     # table alone cannot tell them apart.
-    if data.get("lookback_months", 0) < data.get("lookback_requested", 0):
-        begins = data.get("history_begins")
-        detail = (f"; this ledger's history begins {begins.isoformat()}"
-                  if begins else "")
-        if not data["lookback_months"]:
-            lines.append(red(
-                "No complete month of history to project from"
-                f"{detail} — the figures below carry no historical basis."))
-        else:
-            lines.append(
-                f"Only {data['lookback_months']} of the "
-                f"{data['lookback_requested']} requested months are "
-                f"available{detail}.")
+    for warning in data.get("warnings", []):
+        lines.append(red(warning) if not data["lookback_months"] else warning)
     lines.append("")
     table = Table(headers=["Month", "Income", "Expenses", "Net",
                            "Proj. Cash", "Proj. Net Worth"],
@@ -232,3 +191,112 @@ def render_forecast(data: dict, decimals: int, symbol: str) -> str:
     if not data["accounts"]:
         lines.append("(no income/expense history or budgets to project from)")
     return "\n".join(lines)
+
+
+# -- projected financial statements ------------------------------------------
+
+
+def _market_caveat(led: Ledger) -> str | None:
+    """A forecast projects the household's own behaviour, not the market's.
+    Say so wherever there is something to mark."""
+    has_lots = bool(led.lots())
+    has_foreign = any(a.currency for a in led.accounts(include_closed=True))
+    if not (has_lots or has_foreign):
+        return None
+    what = []
+    if has_lots:
+        what.append("investments are carried at their last mark plus "
+                    "projected contributions (no market return)")
+    if has_foreign:
+        what.append("foreign balances at the last known rate (no FX "
+                    "revaluation)")
+    return "Assumptions: " + "; ".join(what) + "."
+
+
+def forecast_statement(led: Ledger, kind: str, months: int = 6,
+                       method: str = "average", lookback: int = 6,
+                       use_budget: bool = False, use_recurring: bool = False,
+                       classified: bool = True,
+                       pf: ProForma | None = None) -> dict:
+    """A projected income statement, balance sheet or statement of cash
+    flows, built by the ordinary `reports.py` builders over a pro-forma
+    ledger. Pass `pf` to reuse one projection across several statements."""
+    kind = STATEMENT_KINDS.get(kind, kind)
+    if kind not in STATEMENT_ORDER:
+        raise BeansError(f"unknown statement: {kind!r}")
+    if pf is None:
+        pf = proforma.project(led, months=months, method=method,
+                              lookback=lookback, use_budget=use_budget,
+                              use_recurring=use_recurring)
+    label = (f"{pf.window_start.isoformat()} to "
+             f"{pf.window_end.isoformat()} (projected)")
+    if kind == "is":
+        data = reports.income_statement(pf, pf.window_start, pf.window_end,
+                                        label)
+        data["title"] = "PROJECTED INCOME STATEMENT"
+    elif kind == "bs":
+        data = reports.balance_sheet(pf, pf.window_end, classified=classified)
+        data["title"] = "PROJECTED BALANCE SHEET"
+    else:
+        data = reports.cash_flow_statement(pf, pf.window_start,
+                                           pf.window_end, label)
+        data["title"] = "PROJECTED STATEMENT OF CASH FLOWS"
+
+    notes = [f"Horizon: {pf.horizon_months} months from "
+             f"{pf.base_date.isoformat()} | Basis: {_basis(pf)}"]
+    notes += list(pf.warnings)
+    caveat = _market_caveat(led)
+    if caveat:
+        notes.append(caveat)
+    data["notes"] = notes
+    data["forecast"] = {
+        "projected": True,
+        "statement": kind,
+        "basis": _basis(pf),
+        "method": pf.method,
+        "horizon_months": pf.horizon_months,
+        "lookback_months": pf.lookback_months,
+        "lookback_requested": pf.lookback_requested,
+        "use_budget": pf.use_budget,
+        "use_recurring": pf.use_recurring,
+        "base_date": pf.base_date,
+        "window_start": pf.window_start,
+        "window_end": pf.window_end,
+        "warnings": list(pf.warnings),
+    }
+    return data
+
+
+RENDERERS = {
+    "income_statement": reports.render_income_statement,
+    "balance_sheet": reports.render_balance_sheet,
+    "cash_flow_statement": reports.render_cash_flow_statement,
+}
+
+
+def render_forecast_statement(data: dict, decimals: int, symbol: str) -> str:
+    return RENDERERS[data["report"]](data, decimals, symbol)
+
+
+def forecast_statements(led: Ledger, months: int = 6,
+                        method: str = "average", lookback: int = 6,
+                        use_budget: bool = False, use_recurring: bool = False,
+                        classified: bool = True) -> dict:
+    """All three statements off one projection."""
+    pf = proforma.project(led, months=months, method=method,
+                          lookback=lookback, use_budget=use_budget,
+                          use_recurring=use_recurring)
+    return {
+        "report": "forecast_statements",
+        "horizon_months": months,
+        "statements": [
+            forecast_statement(led, kind, classified=classified, pf=pf)
+            for kind in STATEMENT_ORDER
+        ],
+    }
+
+
+def render_forecast_statements(data: dict, decimals: int, symbol: str) -> str:
+    return "\n\n".join(
+        render_forecast_statement(s, decimals, symbol)
+        for s in data["statements"])

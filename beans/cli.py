@@ -623,11 +623,21 @@ def cmd_forecast(args) -> int:
         raise BeansError("--months must be at least 1")
     if args.lookback < 1:
         raise BeansError("--lookback must be at least 1")
-    data = forecast.forecast(led, months=args.months, method=args.method,
-                             lookback=args.lookback,
-                             use_budget=args.use_budget,
-                             use_recurring=args.use_recurring)
-    _emit(args, led, data, forecast.render_forecast)
+    kwargs = dict(months=args.months, method=args.method,
+                  lookback=args.lookback, use_budget=args.use_budget,
+                  use_recurring=args.use_recurring)
+    if args.report == "summary":
+        data = forecast.forecast(led, **kwargs)
+        renderer = forecast.render_forecast
+    elif args.report == "all":
+        data = forecast.forecast_statements(led, classified=not args.flat,
+                                            **kwargs)
+        renderer = forecast.render_forecast_statements
+    else:
+        data = forecast.forecast_statement(led, args.report,
+                                           classified=not args.flat, **kwargs)
+        renderer = forecast.render_forecast_statement
+    _emit(args, led, data, renderer)
     return 0
 
 
@@ -1810,6 +1820,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="project scheduled transactions at their exact "
                         "amounts and dates (takes priority over budgets "
                         "and history for those accounts)")
+    p.add_argument("--report", choices=forecast.REPORT_CHOICES,
+                   default="summary", metavar="WHICH",
+                   help="what to project: summary (default), or a full "
+                        "financial statement in `beans report` format — "
+                        "income/is, balance/bs, cashflow/cf, or all")
+    p.add_argument("--flat", action="store_true",
+                   help="with --report bs, list assets/liabilities by type "
+                        "only, without the current vs non-current split")
     _add_json_arg(p)
     p.set_defaults(func=cmd_forecast)
 
