@@ -19,6 +19,59 @@ ledger), measuring every number against the ledger's own actuals.
 
 ---
 
+## Status — accepted and built
+
+Built on this branch, in the shape §8 laid out: `beans/proforma.py` (the
+projection and the read-only overlay), `forecast_statement` /
+`forecast_statements` in `beans/forecast.py`, an optional title-and-notes
+heading in `reports.py`'s three statement renderers, `--report` and
+`--flat` on the command, a `report` argument on the `get_forecast` MCP
+tool, 37 tests in `tests/test_proforma.py`, and MANUAL and README
+sections. The suite is **612 passed, 11 skipped** (575 before), with no
+existing test changed except `tests/test_forecast.py`'s import, since the
+projection math moved to `proforma.py` as `project_series`.
+
+Everything §4 measured reproduces in the shipped command: the statements
+balance and articulate at every horizon and method tested, card-funded
+spending stays out of operating cash, and `--report all` on a 20-year
+ledger costs about 13 ms over `beans report bs`.
+
+Four things landed differently from the plan, each after the prototype
+met a case the evaluation had not:
+
+- **A run-rate now has to repeat.** The prototype annualized *every*
+  balance-sheet-only transaction, which meant the opening-balances entry —
+  a one-off with an equity leg — was projected forward every month
+  forever, inflating savings by an order of magnitude. Two filters fix it:
+  a transaction touching equity is never a transfer (openings, period
+  closes, archive plugs), and a transfer shape seen in only one month of a
+  multi-month window is a one-off, not a run-rate. A house deposit is not
+  $5,000 a month.
+- **An account with no funding history falls back to cash.** A budget on a
+  category the books have never seen has no mix to read; it is funded from
+  the fullest cash account rather than dropped, so the statement still
+  balances.
+- **Loan-driven accounts say `amortized`.** §5.4's schedule correction
+  keeps the payment at the household's run-rate and moves only the split,
+  so labelling that account `average` in the drivers table would have been
+  wrong.
+- **The archive guarantee is stated more precisely rather than preserved.**
+  §6 predicted the trade: clamping the mix window to `detail_begins` fixes
+  the $1,337/month cash-flow misclassification but costs bit-identity in
+  the projected *balances* after archival (about $46 over six months on
+  the test ledger, and three cents a month on the summary's expense
+  column, because the mix is then read from a shorter window). Correct
+  classification is worth more than bit-identity, the command warns when
+  the window shortens, and the README and MANUAL now say exactly which
+  figures survive compaction: the income and expense projections, always;
+  anything derived from the funding mix, approximately.
+
+**Still open:** market returns on investments, FX revaluation, and
+scenario comparison — all listed as non-goals in §9 and unchanged by the
+implementation.
+
+---
+
 ## Verdict
 
 **Build it. The feature is worth more than it looks, it is cheaper than it

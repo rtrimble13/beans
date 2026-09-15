@@ -780,7 +780,8 @@ period you ask for.
 
 ```
 beans forecast [--months N] [--method {average,trend}] [--lookback N]
-               [--use-budget] [--use-recurring] [--json]
+               [--use-budget] [--use-recurring]
+               [--report {summary,is,bs,cf,all}] [--flat] [--json]
 ```
 
 | Flag | Description |
@@ -790,12 +791,68 @@ beans forecast [--months N] [--method {average,trend}] [--lookback N]
 | `--lookback N` | Months of history to learn from. Default: 6. |
 | `--use-budget` | Use budgeted amounts for accounts that have a budget. |
 | `--use-recurring` | Project scheduled recurring transactions at their exact amounts and dates. Takes priority over budgets and history for those accounts. |
+| `--report WHICH` | `summary` (default), or a full financial statement: `income`/`is`, `balance`/`bs`, `cashflow`/`cf`, or `all`. |
+| `--flat` | With `--report bs`, drop the current vs non-current split. |
 | `--json` | Machine-readable output. |
 
-Projects income, expenses, net savings, cash position, and net worth
-forward, with a breakdown of which accounts drive the projection and
-whether each is driven by history, budget, or a recurring schedule.
-**Source priority per account: recurring schedule > budget > history.**
+The default `summary` projects income, expenses, net savings, cash
+position, and net worth forward, with a breakdown of which accounts drive
+the projection and whether each is driven by history, budget, or a
+recurring schedule. **Source priority per account: recurring schedule >
+budget > history.**
+
+### Projected financial statements
+
+```sh
+beans forecast -n 1  --report bs     # the balance sheet one month out
+beans forecast -n 12 --report is     # the next twelve months' income
+beans forecast -n 6  --report all    # all three, off one projection
+```
+
+`--report` prints a **projected** income statement, balance sheet or
+statement of cash flows, in exactly the layout `beans report` uses for
+the historical ones — because it is the same code. The heading says
+`PROJECTED`, and a basis line under it records the horizon, the source
+priority and any caveat; `--json` carries the same thing in a `forecast`
+block with `"projected": true`, so a machine consumer can never mistake a
+projection for an actual.
+
+How the period is defined:
+
+- The **balance sheet** is dated the last day of the month `N` months out
+  (`-n 1` on any day in March gives 30 April).
+- The **income statement** and **cash-flow statement** cover the window
+  from tomorrow to that date. That window is wider than `N` whole months
+  when the current month is part-elapsed — deliberately, because it is
+  what makes the three statements tie: net income over the window is
+  exactly the rise in the balance sheet's retained earnings, and net
+  change in cash is exactly the change in the cash line.
+
+To do this, the forecast projects **balanced transactions** rather than
+totals, which is also how it knows where the money lands:
+
+- **Funding is read off your books.** Every past transaction with an
+  income or expense leg also records what paid for it, so the projection
+  knows that groceries go on the card and salary lands in checking —
+  nothing to configure.
+- **Transfers are projected too.** A savings sweep, a brokerage
+  contribution and a card payoff never touch an income statement, so the
+  summary's older `Proj. Cash` arithmetic could not see them. They are
+  projected as their own run-rate, which is why projected cash is a real
+  cash figure and not just accumulated net income.
+- **Loans amortize.** Where a liability has a loan attached, the
+  projection keeps the payment at your run-rate but splits it by the
+  amortization schedule, so interest falls and principal rises the way it
+  actually will. Those accounts show a basis of `amortized`.
+- **What it will not pretend to know.** Investments are carried at their
+  last mark plus projected contributions — no market return — and foreign
+  balances at the last known rate, with no FX revaluation. Both are said
+  on the face of the statement when they apply.
+
+A run-rate is a claim that something repeats, so two things are kept out
+of it: anything touching an equity account (opening balances, a period
+close), and a transfer seen in only one month of the lookback window — a
+house deposit is not a monthly outgoing.
 
 ### Best practices
 
@@ -810,6 +867,10 @@ whether each is driven by history, budget, or a recurring schedule.
 - Increase `--lookback` for a noisy or seasonal category (e.g. utilities,
   which vary by season) so the average smooths across a full cycle rather
   than a few atypical months.
+- Read `--report bs` next to `beans report bs` when you want to see what a
+  plan does to the *shape* of your position — whether the debt actually
+  comes down, whether the liquid buffer holds — rather than only to the
+  bottom line.
 
 ---
 
@@ -1880,9 +1941,14 @@ beans archive --through 2025-12-31 -o ~/.beans/ledger-2026.db
 Everything that reports by period. `balances`, `flows`, `monthly_flows`
 and `monthly_type_totals` are all sums, and a sum of monthly sums is the
 monthly sum — so the balance sheet, income statement, statement of cash
-flows, `report trend`, `networth`, `forecast` and every ratio in
-`analyze` return **identical figures** before and after, including
-retained earnings. On a 25-year ledger that costs about 93% of the file:
+flows, `report trend`, `networth`, `forecast`'s income and expense
+projections and every ratio in `analyze` return **identical figures**
+before and after, including retained earnings. The one exception is what
+`beans forecast` derives from the *funding mix* — its projected cash
+column and its projected statements — because a summary bundles a whole
+month into one entry. The mix is therefore read only from months that
+still hold line-item detail, and the forecast says so when that shortens
+its window. On a 25-year ledger that costs about 93% of the file:
 28,564 transactions become 300, and 4.6 MB becomes 0.34 MB.
 
 Every side table comes along untouched: your chart of accounts, budgets,
@@ -2192,7 +2258,8 @@ structured output (`readOnlyHint: true`): `beans_income_statement`,
 `beans_balance_sheet`, `beans_cashflow`, `beans_trend` (a multi-period
 series — the others are all snapshots), `beans_analyze`,
 `beans_list_transactions`, `beans_search`, `beans_register`,
-`beans_budget_report`, `beans_forecast`, `beans_networth`,
+`beans_budget_report`, `beans_forecast` (pass `report` for a
+projected statement), `beans_networth`,
 `beans_list_accounts`, `beans_economic_balance_sheet`, and
 `beans_review_bundle` (assembles the full analyst report set in one call;
 pass `focus: "trend"` to include the series). Bad

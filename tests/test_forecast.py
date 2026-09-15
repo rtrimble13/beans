@@ -1,11 +1,11 @@
 """Numeric tests for the projection math behind `beans forecast`.
 
 The command-level tests only assert that forecast *runs*; these pin the
-actual arithmetic of `_project` for known series so a sign error or
+actual arithmetic of `project_series` for known series so a sign error or
 off-by-one in the trend extrapolation can't ship green.
 """
 
-from beans.forecast import _project
+from beans.proforma import project_series as _project
 
 
 def test_project_trend_continues_a_linear_series():

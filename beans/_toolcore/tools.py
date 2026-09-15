@@ -163,16 +163,25 @@ READ_TOOLS: list[Tool] = [
     ),
     Tool(
         "get_forecast",
-        "Project finances forward from history, budgets, and recurring rules.",
+        "Project finances forward from history, budgets, and recurring "
+        "rules. `report` returns a projected financial statement instead "
+        "of the month-by-month summary.",
         _schema({"months": {"type": "integer",
                             "description": "months to project (default 6)"},
                  "method": {"type": "string", "enum": ["average", "trend"],
-                            "description": "projection method"}}),
+                            "description": "projection method"},
+                 "report": {"type": "string",
+                            "enum": ["summary", "is", "bs", "cf", "all"],
+                            "description": "summary (default), or a "
+                                           "projected income statement, "
+                                           "balance sheet or cash flows"}}),
         lambda a: (["forecast", "--json"]
                    + (["--months", str(a["months"])]
                       if a.get("months") else [])
                    + (["--method", str(a["method"])]
-                      if a.get("method") else [])),
+                      if a.get("method") else [])
+                   + (["--report", str(a["report"])]
+                      if a.get("report") else [])),
     ),
     Tool(
         "get_networth",
