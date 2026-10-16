@@ -460,7 +460,7 @@ def cmd_report_income(args) -> int:
     led = _open(args)
     start, end, label = _period(args)
     data = reports.income_statement(led, start, end, label,
-                                    compare=args.compare)
+                                    compare=args.compare, level=args.level)
     _emit(args, led, data, reports.render_income_statement)
     return 0
 
@@ -627,15 +627,16 @@ def cmd_forecast(args) -> int:
                   lookback=args.lookback, use_budget=args.use_budget,
                   use_recurring=args.use_recurring)
     if args.report == "summary":
-        data = forecast.forecast(led, **kwargs)
+        data = forecast.forecast(led, level=args.level, **kwargs)
         renderer = forecast.render_forecast
     elif args.report == "all":
         data = forecast.forecast_statements(led, classified=not args.flat,
-                                            **kwargs)
+                                            level=args.level, **kwargs)
         renderer = forecast.render_forecast_statements
     else:
         data = forecast.forecast_statement(led, args.report,
-                                           classified=not args.flat, **kwargs)
+                                           classified=not args.flat,
+                                           level=args.level, **kwargs)
         renderer = forecast.render_forecast_statement
     _emit(args, led, data, renderer)
     return 0
@@ -1490,6 +1491,14 @@ def _add_csv_column_args(parser: argparse.ArgumentParser) -> None:
                         help="signed amount column; positive = money in")
 
 
+def _add_level_arg(parser: argparse.ArgumentParser, scope: str) -> None:
+    parser.add_argument(
+        "--level", type=int, metavar="N",
+        help=f"roll {scope} up to N levels of account name: 1 = totals "
+             "only (income, expenses, net income), 2 = Expenses:Food, "
+             "3 = Expenses:Food:Groceries (default: every account in full)")
+
+
 def _add_json_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true",
                         help="output machine-readable JSON")
@@ -1693,6 +1702,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_period_args(p)
     p.add_argument("--compare", action="store_true",
                    help="compare against the prior period")
+    _add_level_arg(p, "the statement's lines")
     _add_json_arg(p)
     p.set_defaults(func=cmd_report_income)
     p = report_sub.add_parser("balance", aliases=["bs"],
@@ -1828,6 +1838,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--flat", action="store_true",
                    help="with --report bs, list assets/liabilities by type "
                         "only, without the current vs non-current split")
+    _add_level_arg(p, "the summary's drivers and the projected income "
+                      "statement")
     _add_json_arg(p)
     p.set_defaults(func=cmd_forecast)
 

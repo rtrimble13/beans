@@ -68,7 +68,10 @@ NON_MONEY_KEYS = {"id", "months", "horizon_months", "lookback_months",
                   "archived_sightings", "source_bytes", "out_bytes",
                   # reports that clamp their window to the ledger's own
                   # history: how many periods were dropped for predating it.
-                  "periods_omitted", "months_omitted"}
+                  "periods_omitted", "months_omitted",
+                  # income statement / forecast --level: how many segments
+                  # of account name the report was rolled up to.
+                  "level"}
 
 
 def jsonify(value, decimals: int):
@@ -106,6 +109,35 @@ def _natural_by_name(led: Ledger, raw: dict[int, int],
     return out
 
 
+def account_at_level(name: str, level: int) -> str:
+    """`name` cut to its first `level` segments: `Expenses:Food:Groceries`
+    is `Expenses:Food` at level 2, and is itself at level 3 or deeper."""
+    return ":".join(name.split(":")[:level])
+
+
+def check_level(level: int | None) -> None:
+    if level is not None and level < 1:
+        raise BeansError(f"invalid --level {level}: must be 1 or more")
+
+
+def collapse(amounts: dict[str, int], level: int | None) -> dict[str, int]:
+    """Roll accounts up to `level` segments of their name, summing each
+    deeper account into its ancestor at that depth. None keeps every
+    account as it is. Level 1 is the statement's own sections (Income,
+    Expenses), which its totals already carry, so nothing is left below
+    them. A subtotal that nets to zero is dropped, as a zero account is."""
+    check_level(level)
+    if level is None:
+        return amounts
+    if level == 1:
+        return {}
+    out: dict[str, int] = {}
+    for name, amount in amounts.items():
+        key = account_at_level(name, level)
+        out[key] = out.get(key, 0) + amount
+    return {name: amount for name, amount in out.items() if amount}
+
+
 def _heading(data: dict, default: str, subtitle: str) -> list[str]:
     """A statement's heading: its title, its date line, and any notes the
     caller attached. This is how `beans forecast --report bs` says it is a
@@ -132,18 +164,26 @@ def _tree_rows(table: Table, amounts: dict[str, int], decimals: int,
 
 
 def income_statement(led: Ledger, start: date | None, end: date,
-                     label: str, compare: bool = False) -> dict:
+                     label: str, compare: bool = False,
+                     level: int | None = None) -> dict:
+    """`level` rolls the account lines up to that many segments of account
+    name (see `collapse`); the totals are the same at every level."""
+    check_level(level)
     flows = led.flows(start, end)
+    income = _natural_by_name(led, flows, AccountType.INCOME)
+    expenses = _natural_by_name(led, flows, AccountType.EXPENSE)
     data = {
         "report": "income_statement",
         "period": label,
         "start": start,
         "end": end,
-        "income": _natural_by_name(led, flows, AccountType.INCOME),
-        "expenses": _natural_by_name(led, flows, AccountType.EXPENSE),
+        "level": level,
+        "income": collapse(income, level),
+        "expenses": collapse(expenses, level),
+        # Summed before collapsing: level 1 leaves no lines to sum.
+        "total_income": sum(income.values()),
+        "total_expenses": sum(expenses.values()),
     }
-    data["total_income"] = sum(data["income"].values())
-    data["total_expenses"] = sum(data["expenses"].values())
     data["net_income"] = data["total_income"] - data["total_expenses"]
     if compare:
         if start is None:
@@ -154,7 +194,8 @@ def income_statement(led: Ledger, start: date | None, end: date,
                 "(use a bounded period or --from/--to)")
         else:
             p_start, p_end, p_label = prior_period(start, end)
-            data["compare"] = income_statement(led, p_start, p_end, p_label)
+            data["compare"] = income_statement(led, p_start, p_end, p_label,
+                                               level=level)
     return data
 
 
@@ -168,19 +209,23 @@ def render_income_statement(data: dict, decimals: int, symbol: str) -> str:
             return ""
         return f"{100 * amount / total_income:5.1f}%"
 
+    # --level 1 is the totals alone: a section heading over no lines, and a
+    # rule under nothing, would only repeat the total beneath them.
+    detail = data.get("level") != 1
     table = Table(align="lrr")
-    table.add(bold("Income"), "", "")
-    _tree_rows(table, data["income"], decimals, extra=pct)
-    table.rule()
-    table.add(bold("Total Income"),
-              money(total_income, decimals, symbol), pct("", total_income))
-    table.add("", "", "")
-    table.add(bold("Expenses"), "", "")
-    _tree_rows(table, data["expenses"], decimals, extra=pct)
-    table.rule()
-    table.add(bold("Total Expenses"),
-              money(data["total_expenses"], decimals, symbol),
-              pct("", data["total_expenses"]))
+
+    def section(title: str, amounts: dict[str, int], total: int) -> None:
+        if detail:
+            table.add(bold(title), "", "")
+            _tree_rows(table, amounts, decimals, extra=pct)
+            table.rule()
+        table.add(bold(f"Total {title}"),
+                  money(total, decimals, symbol), pct("", total))
+
+    section("Income", data["income"], total_income)
+    if detail:
+        table.add("", "", "")
+    section("Expenses", data["expenses"], data["total_expenses"])
     table.rule()
     table.add(bold("Net Income"),
               money(data["net_income"], decimals, symbol),

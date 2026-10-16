@@ -5,6 +5,9 @@ import pytest
 from beans import reports
 from beans.analysis import analyze
 from beans.budget import budget_report
+from beans.models import AccountType
+from beans.render import rollup
+from beans.utils import BeansError
 from tests.conftest import post
 
 
@@ -420,3 +423,231 @@ def test_trend_of_only_a_partial_period_says_nothing_is_complete(led):
     assert data["rows"][0]["partial"] is True
     assert data["totals"]["complete_periods"] == 0
     assert data["totals"]["average_expenses"] == 180000
+
+
+# -- income statement --level ------------------------------------------------
+
+
+def seed_levels(led):
+    """Spending three and four segments deep, beside a two-segment account,
+    so every level has something to roll up."""
+    led.add_account("Expenses:Activities:Music Lessons", AccountType.EXPENSE)
+    led.add_account("Expenses:Activities:Sports:Soccer", AccountType.EXPENSE)
+    post(led, date(2026, 9, 1), "paycheck",
+         ("Assets:Checking", 1000000), ("Income:Salary", -1000000))
+    post(led, date(2026, 9, 2), "interest",
+         ("Assets:Checking", 1000), ("Income:Interest", -1000))
+    post(led, date(2026, 9, 3), "lessons",
+         ("Expenses:Activities:Music Lessons", 165700),
+         ("Assets:Checking", -165700))
+    post(led, date(2026, 9, 4), "soccer",
+         ("Expenses:Activities:Sports:Soccer", 59100),
+         ("Assets:Checking", -59100))
+    post(led, date(2026, 9, 5), "groceries",
+         ("Expenses:Food:Groceries", 60000), ("Assets:Checking", -60000))
+    post(led, date(2026, 9, 6), "dining",
+         ("Expenses:Food:Dining", 40000), ("Assets:Checking", -40000))
+    post(led, date(2026, 9, 7), "movies",
+         ("Expenses:Entertainment", 20000), ("Assets:Checking", -20000))
+
+
+def september(led, **kwargs):
+    return reports.income_statement(
+        led, date(2026, 9, 1), date(2026, 9, 30), "September 2026", **kwargs)
+
+
+def test_collapse_rolls_each_account_up_to_its_ancestor():
+    amounts = {"Expenses:Food:Groceries": 600, "Expenses:Food:Dining": 400,
+               "Expenses:Entertainment": 200, "Expenses:A:B:C": 50}
+    assert reports.collapse(amounts, None) is amounts
+    assert reports.collapse(amounts, 1) == {}
+    assert reports.collapse(amounts, 2) == {
+        "Expenses:Food": 1000, "Expenses:Entertainment": 200,
+        "Expenses:A": 50}
+    assert reports.collapse(amounts, 3) == {
+        "Expenses:Food:Groceries": 600, "Expenses:Food:Dining": 400,
+        "Expenses:Entertainment": 200, "Expenses:A:B": 50}
+    # Deeper than the deepest account is the full view.
+    assert reports.collapse(amounts, 9) == amounts
+
+
+def test_collapse_drops_a_subtotal_that_nets_to_zero():
+    # A refund that exactly offsets the spend: no line, as for a zero
+    # account in the full view.
+    amounts = {"Expenses:Food:Groceries": 500, "Expenses:Food:Dining": -500,
+               "Expenses:Health": 100}
+    assert reports.collapse(amounts, 2) == {"Expenses:Health": 100}
+
+
+@pytest.mark.parametrize("level", [0, -1])
+def test_collapse_rejects_a_level_below_one(level):
+    with pytest.raises(BeansError, match="must be 1 or more"):
+        reports.collapse({}, level)
+
+
+def test_income_statement_default_is_every_account(led):
+    seed_levels(led)
+    data = september(led)
+    assert data["level"] is None
+    assert data["expenses"]["Expenses:Activities:Sports:Soccer"] == 59100
+
+
+def test_income_statement_level_two_is_one_level_below_the_sections(led):
+    seed_levels(led)
+    data = september(led, level=2)
+    assert data["level"] == 2
+    assert data["income"] == {"Income:Salary": 1000000,
+                              "Income:Interest": 1000}
+    assert data["expenses"] == {"Expenses:Activities": 224800,
+                                "Expenses:Food": 100000,
+                                "Expenses:Entertainment": 20000}
+
+
+def test_income_statement_level_three_folds_only_deeper_accounts(led):
+    seed_levels(led)
+    data = september(led, level=3)
+    assert data["expenses"] == {
+        "Expenses:Activities:Music Lessons": 165700,
+        "Expenses:Activities:Sports": 59100,
+        "Expenses:Food:Groceries": 60000,
+        "Expenses:Food:Dining": 40000,
+        "Expenses:Entertainment": 20000}
+
+
+@pytest.mark.parametrize("level", [None, 1, 2, 3, 4])
+def test_income_statement_totals_are_the_same_at_every_level(led, level):
+    seed_levels(led)
+    data = september(led, level=level)
+    full = september(led)
+    for key in ("total_income", "total_expenses", "net_income"):
+        assert data[key] == full[key]
+    if level != 1:
+        # The lines still add up to the totals once rolled up.
+        assert sum(data["income"].values()) == data["total_income"]
+        assert sum(data["expenses"].values()) == data["total_expenses"]
+
+
+def test_income_statement_level_one_is_the_totals_alone(led):
+    seed_levels(led)
+    data = september(led, level=1)
+    assert data["income"] == {} and data["expenses"] == {}
+    assert data["total_income"] == 1001000
+    assert data["total_expenses"] == 344800
+    assert data["net_income"] == 656200
+    text = reports.render_income_statement(data, 2, "$")
+    assert "Total Income" in text and "Total Expenses" in text
+    assert "Net Income" in text
+    # No section headings over empty sections, and no accounts.
+    lines = [line.strip() for line in text.splitlines()]
+    assert "Income" not in lines and "Expenses" not in lines
+    assert "Salary" not in text and "Activities" not in text
+
+
+def test_render_income_statement_at_level_two(led):
+    seed_levels(led)
+    text = reports.render_income_statement(september(led, level=2), 2, "$")
+    assert "Activities" in text and "2,248.00" in text
+    assert "Music Lessons" not in text and "Soccer" not in text
+    # Each rolled-up line carries its own share of income.
+    assert "22.5%" in text  # 2,248.00 / 10,010.00
+
+
+def test_income_statement_compare_is_rolled_up_too(led):
+    seed_levels(led)
+    data = september(led, level=2, compare=True)
+    assert data["compare"]["level"] == 2
+
+
+def test_income_statement_level_survives_json(led):
+    seed_levels(led)
+    out = reports.jsonify(september(led, level=2), 2)
+    # A level is a count of name segments, not money.
+    assert out["level"] == 2
+    assert out["expenses"]["Expenses:Activities"] == "2248.00"
+
+
+# -- a parent account with postings of its own -------------------------------
+
+
+def amount_lines(text: str, section: str, total: str) -> list[str]:
+    """The amount column of `section`'s lines, between its heading and the
+    `total` line: what a reader adds up to check the total."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if line.strip() == section)
+    end = next(i for i, line in enumerate(lines)
+               if i > start and line.strip().startswith(total))
+    return [line.split()[-1] if "%" not in line else line.split()[-2]
+            for line in lines[start + 1:end]
+            if line.strip() and not line.startswith("-")
+            and any(ch.isdigit() for ch in line)]
+
+
+def test_rollup_gives_a_parent_balance_its_own_line():
+    amounts = {"Expenses:Food": 100, "Expenses:Food:Groceries": 200,
+               "Expenses:Health": 50}
+    assert rollup(amounts) == [
+        ("Expenses", 0, 350, False),
+        ("Food", 1, 300, False),
+        ("Food (direct)", 2, 100, True),
+        ("Groceries", 2, 200, True),
+        ("Health", 1, 50, True),
+    ]
+
+
+def test_rollup_without_parent_postings_is_unchanged():
+    rows = rollup({"Expenses:Food:Groceries": 200, "Expenses:Health": 50})
+    assert not any("(direct)" in name for name, *_ in rows)
+    # Only accounts that were posted to are leaves; headers carry no line.
+    assert [(name, leaf) for name, _, _, leaf in rows] == [
+        ("Expenses", False), ("Food", False), ("Groceries", True),
+        ("Health", True)]
+
+
+def test_income_statement_shows_a_parent_accounts_own_spending(led):
+    led.add_account("Expenses:Food", AccountType.EXPENSE)
+    post(led, date(2026, 9, 1), "paycheck",
+         ("Assets:Checking", 100000), ("Income:Salary", -100000))
+    post(led, date(2026, 9, 2), "market",
+         ("Expenses:Food", 10000), ("Assets:Checking", -10000))
+    post(led, date(2026, 9, 3), "groceries",
+         ("Expenses:Food:Groceries", 20000), ("Assets:Checking", -20000))
+    data = reports.income_statement(
+        led, date(2026, 9, 1), date(2026, 9, 30), "September 2026")
+    text = reports.render_income_statement(data, 2, "$")
+    assert "Food (direct)" in text
+    # The visible lines add up to the total printed under them.
+    assert amount_lines(text, "Expenses", "Total Expenses") == \
+        ["100.00", "200.00"]
+    assert data["total_expenses"] == 30000
+    # Rolled up, the parent's own spending joins its sub-accounts' in one
+    # line, and there is nothing left to show separately.
+    rolled = reports.render_income_statement(
+        reports.income_statement(led, date(2026, 9, 1), date(2026, 9, 30),
+                                 "September 2026", level=2), 2, "$")
+    assert "(direct)" not in rolled
+    assert amount_lines(rolled, "Expenses", "Total Expenses") == ["300.00"]
+
+
+def test_flat_balance_sheet_shows_a_parent_accounts_own_balance(led):
+    led.add_account("Assets:Investments", AccountType.ASSET,
+                    liquidity="noncurrent")
+    post(led, date(2026, 1, 1), "opening",
+         ("Assets:Checking", 100000), ("Equity:Opening Balances", -100000))
+    post(led, date(2026, 1, 2), "unsorted holding",
+         ("Assets:Investments", 30000), ("Assets:Checking", -30000))
+    post(led, date(2026, 1, 3), "brokerage",
+         ("Assets:Investments:Brokerage", 20000),
+         ("Assets:Checking", -20000))
+    for classified in (True, False):
+        data = reports.balance_sheet(led, date(2026, 1, 31),
+                                     classified=classified)
+        text = reports.render_balance_sheet(data, 2, "$")
+        assert "Investments (direct)" in text
+        assert "300.00" in text
+        assert data["balanced"] is True
+    flat = reports.render_balance_sheet(
+        reports.balance_sheet(led, date(2026, 1, 31), classified=False),
+        2, "$")
+    assert amount_lines(flat, "Assets", "Total Assets") == \
+        ["500.00", "300.00", "200.00"]

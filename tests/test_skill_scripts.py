@@ -1275,19 +1275,26 @@ def test_sensitivity_ranks_drivers_by_span_and_drops_inert_ones():
 
 @pytest.fixture
 def economic_ledger(tmp_path):
-    """A year of salary and spending — enough for a run-rate."""
+    """A year of salary and spending — enough for a run-rate.
+
+    The year is the twelve months up to the last complete one by the real
+    clock, not fixed dates: `beans economic` takes its run-rate lookback
+    from today, so a fixed year slides out of that window as the calendar
+    moves on (and a month with no salary drags the run-rate down)."""
     from beans.cli import main
+    from beans.utils import add_months
     path = str(tmp_path / "econ.db")
     assert main(["-f", path, "init"]) == 0
-    assert main(["-f", path, "tx", "add", "--date", "2025-09-01",
+    first = add_months(date.today(), -12)
+    months = [add_months(first, index) for index in range(12)]
+    assert main(["-f", path, "tx", "add", "--date", first.isoformat(),
                  "--desc", "Opening", "--post", "Assets:Checking", "20000",
                  "--post", "Equity:Opening Balances"]) == 0
-    for index in range(12):
-        year, month = (2025, 9 + index) if index < 4 else (2026, index - 3)
+    for month in months:
         assert main(["-f", path, "earn", "6000", "Salary",
-                     "--date", f"{year}-{month:02d}-15"]) == 0
+                     "--date", month.replace(day=15).isoformat()]) == 0
         assert main(["-f", path, "spend", "3000", "Rent",
-                     "--date", f"{year}-{month:02d}-02"]) == 0
+                     "--date", month.replace(day=2).isoformat()]) == 0
     return path
 
 
