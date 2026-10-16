@@ -16,7 +16,7 @@ from beans import archive, forecast, proforma, reports
 from beans.cli import main
 from beans.ledger import Ledger
 from beans.models import AccountType, Posting
-from beans.utils import add_months, month_bounds
+from beans.utils import BeansError, add_months, month_bounds
 from tests.conftest import post
 
 TODAY = date.today()
@@ -432,6 +432,80 @@ def test_cli_flat_balance_sheet(household, capsys):
     out = capsys.readouterr().out
     assert "Current Assets" not in out
     assert "Total Assets" in out
+
+
+
+# -- --level -----------------------------------------------------------------
+
+
+def test_summary_level_rolls_up_the_drivers_not_the_months(household):
+    # Dining is budget-driven beside history-driven groceries, so the
+    # rolled-up Food line was projected two ways and has to say so.
+    household.set_budget(household.find_account("Expenses:Food:Dining"),
+                         150_00, "monthly")
+    full = forecast.forecast(household, months=3, use_budget=True)
+    data = forecast.forecast(household, months=3, use_budget=True, level=2)
+    assert data["level"] == 2
+    assert data["months"] == full["months"]
+    assert data["total_projected_net"] == full["total_projected_net"]
+    drivers = {d["account"]: d for d in data["accounts"]}
+    assert set(drivers) == {"Income:Salary", "Expenses:Taxes",
+                            "Expenses:Food"}
+    food = drivers["Expenses:Food"]
+    assert food["total"] == sum(d["total"] for d in full["accounts"]
+                                if d["account"].startswith("Expenses:Food:"))
+    assert food["monthly_avg"] == round(food["total"] / 3)
+    assert food["source"] == "average, budget"
+
+
+def test_summary_level_one_drops_the_drivers(household, capsys):
+    data = forecast.forecast(household, months=2, level=1)
+    assert data["accounts"] == []
+    text = forecast.render_forecast(data, 2, "$")
+    assert "Proj. Net Worth" in text
+    # Not the "nothing to project from" note: there is, it is just rolled up.
+    assert "Projection drivers" not in text
+    assert "no income/expense history" not in text
+
+
+def test_projected_income_statement_level(household):
+    pf = proforma.project(household, months=3)
+    full = forecast.forecast_statement(household, "is", pf=pf)
+    data = forecast.forecast_statement(household, "is", pf=pf, level=2)
+    assert data["title"] == "PROJECTED INCOME STATEMENT"
+    assert set(data["expenses"]) == {"Expenses:Taxes", "Expenses:Food"}
+    for key in ("total_income", "total_expenses", "net_income"):
+        assert data[key] == full[key]
+
+
+@pytest.mark.parametrize("kind", ["bs", "cf", "balance", "cashflow"])
+def test_level_is_refused_where_there_is_nothing_to_roll_up(household, kind):
+    with pytest.raises(BeansError, match="--level"):
+        forecast.forecast_statement(household, kind, months=1, level=2)
+
+
+def test_report_all_rolls_up_only_the_income_statement(household):
+    data = forecast.forecast_statements(household, months=1, level=1)
+    is_, bs, cf = data["statements"]
+    assert is_["level"] == 1 and is_["expenses"] == {}
+    assert bs["balanced"] is True
+    assert "Assets:Checking" in bs["assets"]
+    assert "level" not in bs and "level" not in cf
+
+
+def test_cli_forecast_level(household, capsys):
+    path = str(household.path)
+    assert main(["-f", path, "forecast", "-n", "1", "--report", "is",
+                 "--level", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "PROJECTED INCOME STATEMENT" in out
+    assert "Total Income" in out and "Groceries" not in out
+    assert main(["-f", path, "forecast", "-n", "1", "--level", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "Expenses:Food " in out and "Groceries" not in out
+    assert main(["-f", path, "forecast", "--report", "bs",
+                 "--level", "2"]) == 1
+    assert "--level" in capsys.readouterr().err
 
 
 # -- what a run-rate is allowed to be ----------------------------------------

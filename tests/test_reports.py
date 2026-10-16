@@ -5,6 +5,8 @@ import pytest
 from beans import reports
 from beans.analysis import analyze
 from beans.budget import budget_report
+from beans.models import AccountType
+from beans.utils import BeansError
 from tests.conftest import post
 
 
@@ -420,3 +422,144 @@ def test_trend_of_only_a_partial_period_says_nothing_is_complete(led):
     assert data["rows"][0]["partial"] is True
     assert data["totals"]["complete_periods"] == 0
     assert data["totals"]["average_expenses"] == 180000
+
+
+# -- income statement --level ------------------------------------------------
+
+
+def seed_levels(led):
+    """Spending three and four segments deep, beside a two-segment account,
+    so every level has something to roll up."""
+    led.add_account("Expenses:Activities:Music Lessons", AccountType.EXPENSE)
+    led.add_account("Expenses:Activities:Sports:Soccer", AccountType.EXPENSE)
+    post(led, date(2026, 9, 1), "paycheck",
+         ("Assets:Checking", 1000000), ("Income:Salary", -1000000))
+    post(led, date(2026, 9, 2), "interest",
+         ("Assets:Checking", 1000), ("Income:Interest", -1000))
+    post(led, date(2026, 9, 3), "lessons",
+         ("Expenses:Activities:Music Lessons", 165700),
+         ("Assets:Checking", -165700))
+    post(led, date(2026, 9, 4), "soccer",
+         ("Expenses:Activities:Sports:Soccer", 59100),
+         ("Assets:Checking", -59100))
+    post(led, date(2026, 9, 5), "groceries",
+         ("Expenses:Food:Groceries", 60000), ("Assets:Checking", -60000))
+    post(led, date(2026, 9, 6), "dining",
+         ("Expenses:Food:Dining", 40000), ("Assets:Checking", -40000))
+    post(led, date(2026, 9, 7), "movies",
+         ("Expenses:Entertainment", 20000), ("Assets:Checking", -20000))
+
+
+def september(led, **kwargs):
+    return reports.income_statement(
+        led, date(2026, 9, 1), date(2026, 9, 30), "September 2026", **kwargs)
+
+
+def test_collapse_rolls_each_account_up_to_its_ancestor():
+    amounts = {"Expenses:Food:Groceries": 600, "Expenses:Food:Dining": 400,
+               "Expenses:Entertainment": 200, "Expenses:A:B:C": 50}
+    assert reports.collapse(amounts, None) is amounts
+    assert reports.collapse(amounts, 1) == {}
+    assert reports.collapse(amounts, 2) == {
+        "Expenses:Food": 1000, "Expenses:Entertainment": 200,
+        "Expenses:A": 50}
+    assert reports.collapse(amounts, 3) == {
+        "Expenses:Food:Groceries": 600, "Expenses:Food:Dining": 400,
+        "Expenses:Entertainment": 200, "Expenses:A:B": 50}
+    # Deeper than the deepest account is the full view.
+    assert reports.collapse(amounts, 9) == amounts
+
+
+def test_collapse_drops_a_subtotal_that_nets_to_zero():
+    # A refund that exactly offsets the spend: no line, as for a zero
+    # account in the full view.
+    amounts = {"Expenses:Food:Groceries": 500, "Expenses:Food:Dining": -500,
+               "Expenses:Health": 100}
+    assert reports.collapse(amounts, 2) == {"Expenses:Health": 100}
+
+
+@pytest.mark.parametrize("level", [0, -1])
+def test_collapse_rejects_a_level_below_one(level):
+    with pytest.raises(BeansError, match="must be 1 or more"):
+        reports.collapse({}, level)
+
+
+def test_income_statement_default_is_every_account(led):
+    seed_levels(led)
+    data = september(led)
+    assert data["level"] is None
+    assert data["expenses"]["Expenses:Activities:Sports:Soccer"] == 59100
+
+
+def test_income_statement_level_two_is_one_level_below_the_sections(led):
+    seed_levels(led)
+    data = september(led, level=2)
+    assert data["level"] == 2
+    assert data["income"] == {"Income:Salary": 1000000,
+                              "Income:Interest": 1000}
+    assert data["expenses"] == {"Expenses:Activities": 224800,
+                                "Expenses:Food": 100000,
+                                "Expenses:Entertainment": 20000}
+
+
+def test_income_statement_level_three_folds_only_deeper_accounts(led):
+    seed_levels(led)
+    data = september(led, level=3)
+    assert data["expenses"] == {
+        "Expenses:Activities:Music Lessons": 165700,
+        "Expenses:Activities:Sports": 59100,
+        "Expenses:Food:Groceries": 60000,
+        "Expenses:Food:Dining": 40000,
+        "Expenses:Entertainment": 20000}
+
+
+@pytest.mark.parametrize("level", [None, 1, 2, 3, 4])
+def test_income_statement_totals_are_the_same_at_every_level(led, level):
+    seed_levels(led)
+    data = september(led, level=level)
+    full = september(led)
+    for key in ("total_income", "total_expenses", "net_income"):
+        assert data[key] == full[key]
+    if level != 1:
+        # The lines still add up to the totals once rolled up.
+        assert sum(data["income"].values()) == data["total_income"]
+        assert sum(data["expenses"].values()) == data["total_expenses"]
+
+
+def test_income_statement_level_one_is_the_totals_alone(led):
+    seed_levels(led)
+    data = september(led, level=1)
+    assert data["income"] == {} and data["expenses"] == {}
+    assert data["total_income"] == 1001000
+    assert data["total_expenses"] == 344800
+    assert data["net_income"] == 656200
+    text = reports.render_income_statement(data, 2, "$")
+    assert "Total Income" in text and "Total Expenses" in text
+    assert "Net Income" in text
+    # No section headings over empty sections, and no accounts.
+    lines = [line.strip() for line in text.splitlines()]
+    assert "Income" not in lines and "Expenses" not in lines
+    assert "Salary" not in text and "Activities" not in text
+
+
+def test_render_income_statement_at_level_two(led):
+    seed_levels(led)
+    text = reports.render_income_statement(september(led, level=2), 2, "$")
+    assert "Activities" in text and "2,248.00" in text
+    assert "Music Lessons" not in text and "Soccer" not in text
+    # Each rolled-up line carries its own share of income.
+    assert "22.5%" in text  # 2,248.00 / 10,010.00
+
+
+def test_income_statement_compare_is_rolled_up_too(led):
+    seed_levels(led)
+    data = september(led, level=2, compare=True)
+    assert data["compare"]["level"] == 2
+
+
+def test_income_statement_level_survives_json(led):
+    seed_levels(led)
+    out = reports.jsonify(september(led, level=2), 2)
+    # A level is a count of name segments, not money.
+    assert out["level"] == 2
+    assert out["expenses"]["Expenses:Activities"] == "2248.00"

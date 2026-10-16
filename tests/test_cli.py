@@ -1153,3 +1153,27 @@ def test_report_trend_on_an_empty_ledger(capsys, ledger_file):
     data = json.loads(out)
     assert data["accounts"] == []
     assert data["totals"]["net_income"] == "0.00"
+
+
+def test_report_income_level(capsys, ledger_file):
+    run(capsys, ledger_file, "earn", "6000", "Salary", "--date", "2026-01-15")
+    run(capsys, ledger_file, "spend", "450", "Groceries",
+        "--date", "2026-01-20")
+    run(capsys, ledger_file, "spend", "80", "Dining", "--date", "2026-01-21")
+
+    code, out, _ = run(capsys, ledger_file, "report", "is",
+                       "--period", "2026-01", "--level", "2", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["level"] == 2
+    assert data["expenses"] == {"Expenses:Food": "530.00"}
+    assert data["total_expenses"] == "530.00"
+
+    code, out, _ = run(capsys, ledger_file, "report", "is",
+                       "--period", "2026-01", "--level", "1")
+    assert code == 0
+    assert "Total Expenses" in out and "Food" not in out
+
+    code, _, err = run(capsys, ledger_file, "report", "is", "--level", "0")
+    assert code == 1
+    assert "must be 1 or more" in err

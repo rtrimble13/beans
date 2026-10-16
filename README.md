@@ -270,13 +270,19 @@ Reports accept `--period` with: `ytd`, `all`, `this-month`, `last-month`,
 
 ```sh
 beans report income --period 2026-Q1 --compare   # with prior-quarter deltas
+beans report is --period 2026-09 --level 2       # rolled up: Expenses:Food, ...
 beans report balance --date 2026-03-31
 beans report cashflow --period 2026
 beans report trend --periods 12                  # a series, not a snapshot
 ```
 
 The income statement shows each line as a % of total income (a common-size
-view). The balance sheet is **classified** — assets and liabilities are split
+view). `--level N` rolls it up to the first N segments of each account name:
+`1` is just Total Income, Total Expenses and Net Income, `2` is one level below
+(`Expenses:Food`), `3` one further (`Expenses:Food:Groceries`); the default
+lists every account.
+
+The balance sheet is **classified** — assets and liabilities are split
 into current and non-current sections (use `--flat` for a by-type-only listing).
 It computes **retained earnings** on the fly —
 cumulative net income that was never formally closed — so
@@ -399,6 +405,7 @@ beans forecast --use-recurring          # scheduled txns at exact amounts/dates
 beans forecast -n 1  --report bs        # the balance sheet one month out
 beans forecast -n 12 --report is        # the next twelve months' income
 beans forecast -n 6  --report all       # all three statements
+beans forecast -n 12 --report is --level 2   # ...rolled up by category
 ```
 
 Source priority per account: recurring schedule > budget > history.

@@ -142,6 +142,21 @@ def test_runner_matches_direct_json(ledger):
     assert result.data == json.loads(buf.getvalue())
 
 
+def test_runner_passes_level_through(ledger):
+    runner = Runner(ledger)
+    assert runner.command_line(
+        "get_income_statement", {"period": "2026", "level": 2}) == \
+        "beans report income --json --period 2026 --level 2"
+    result = runner.run("get_income_statement", {"period": "2026",
+                                                 "level": 2})
+    assert result.ok
+    assert result.data["level"] == 2
+    assert result.data["expenses"] == {"Expenses:Food": "170.00"}
+    result = runner.run("get_forecast", {"months": 1, "level": 1})
+    assert result.ok
+    assert result.data["accounts"] == []
+
+
 def test_runner_builds_expected_argv(ledger):
     runner = Runner(ledger, allow_writes=True)
     line = runner.command_line(

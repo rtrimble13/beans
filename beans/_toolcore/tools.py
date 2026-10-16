@@ -47,6 +47,21 @@ def _schema(properties: dict, required: list[str] | None = None) -> dict:
             "required": required or []}
 
 
+_LEVEL_PROP = {
+    "level": {
+        "type": "integer",
+        "description": ("roll accounts up to N levels of account name: 1 = "
+                        "totals only, 2 = Expenses:Food, 3 = "
+                        "Expenses:Food:Groceries (default: every account)"),
+    },
+}
+
+
+def _level_argv(args: dict) -> list[str]:
+    level = args.get("level")
+    return ["--level", str(level)] if level is not None else []
+
+
 def _period_argv(args: dict) -> list[str]:
     period = args.get("period")
     return ["--period", str(period)] if period else []
@@ -58,13 +73,16 @@ READ_TOOLS: list[Tool] = [
     Tool(
         "get_income_statement",
         "Income statement (revenue, expenses, net) with common-size "
-        "percentages; pass compare=true to include the prior period.",
+        "percentages; pass compare=true to include the prior period, and "
+        "level to roll the accounts up to a summary.",
         _schema({**_PERIOD_PROP,
                  "compare": {"type": "boolean",
                              "description": "compare against the prior "
-                                            "period"}}),
+                                            "period"},
+                 **_LEVEL_PROP}),
         lambda a: (["report", "income", "--json"] + _period_argv(a)
-                   + (["--compare"] if a.get("compare") else [])),
+                   + (["--compare"] if a.get("compare") else [])
+                   + _level_argv(a)),
     ),
     Tool(
         "get_balance_sheet",
@@ -174,14 +192,16 @@ READ_TOOLS: list[Tool] = [
                             "enum": ["summary", "is", "bs", "cf", "all"],
                             "description": "summary (default), or a "
                                            "projected income statement, "
-                                           "balance sheet or cash flows"}}),
+                                           "balance sheet or cash flows"},
+                 **_LEVEL_PROP}),
         lambda a: (["forecast", "--json"]
                    + (["--months", str(a["months"])]
                       if a.get("months") else [])
                    + (["--method", str(a["method"])]
                       if a.get("method") else [])
                    + (["--report", str(a["report"])]
-                      if a.get("report") else [])),
+                      if a.get("report") else [])
+                   + _level_argv(a)),
     ),
     Tool(
         "get_networth",

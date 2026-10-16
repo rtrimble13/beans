@@ -73,9 +73,32 @@ def _month_buckets(pf: ProForma, accounts: dict) -> dict[str, dict[str, int]]:
     return out
 
 
+def _collapse_drivers(detail: list[dict], level: int,
+                      months: int) -> list[dict]:
+    """The projection drivers rolled up to `level` segments of account
+    name, the way `reports.collapse` rolls up a statement's lines. A rolled
+    up line whose accounts were projected different ways lists each way."""
+    if level == 1:
+        return []
+    groups: dict[tuple[str, str], dict] = {}
+    for d in detail:
+        name = reports.account_at_level(d["account"], level)
+        group = groups.setdefault((d["type"], name), {
+            "account": name, "type": d["type"], "total": 0, "sources": set()})
+        group["total"] += d["total"]
+        group["sources"].add(d["source"])
+    return [{"account": g["account"], "type": g["type"],
+             "monthly_avg": round(g["total"] / months), "total": g["total"],
+             "source": ", ".join(sorted(g["sources"]))}
+            for g in groups.values() if g["total"]]
+
+
 def forecast(led: Ledger, months: int = 6, method: str = "average",
              lookback: int = 6, use_budget: bool = False,
-             use_recurring: bool = False) -> dict:
+             use_recurring: bool = False, level: int | None = None) -> dict:
+    """`level` rolls the projection drivers up to that many segments of
+    account name; the month-by-month figures are the same at every level."""
+    reports.check_level(level)
     pf = proforma.project(led, months=months, method=method,
                           lookback=lookback, use_budget=use_budget,
                           use_recurring=use_recurring)
@@ -125,6 +148,8 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
                 "total": total,
                 "source": driver.source,
             })
+    if level is not None:
+        detail = _collapse_drivers(detail, level, months)
     detail.sort(key=lambda d: (d["type"], -abs(d["total"])))
 
     return {
@@ -136,6 +161,7 @@ def forecast(led: Ledger, months: int = 6, method: str = "average",
         "horizon_months": months,
         "use_budget": use_budget,
         "use_recurring": use_recurring,
+        "level": level,
         "current_cash": cash_now,
         "current_net_worth": net_worth_now,
         "months": rows,
@@ -181,6 +207,10 @@ def render_forecast(data: dict, decimals: int, symbol: str) -> str:
               money(data["total_projected_net"], decimals, symbol), "", "")
     lines.append(table.render())
 
+    # At --level 1 the table above is the whole answer: income, expenses
+    # and net are the top level, so there is no account breakdown to add.
+    if data.get("level") == 1:
+        return "\n".join(lines)
     lines += ["", bold("Projection drivers (monthly)")]
     drivers = Table(headers=["Account", "Type", "Monthly", "Basis"],
                     align="llrl")
@@ -217,13 +247,19 @@ def forecast_statement(led: Ledger, kind: str, months: int = 6,
                        method: str = "average", lookback: int = 6,
                        use_budget: bool = False, use_recurring: bool = False,
                        classified: bool = True,
-                       pf: ProForma | None = None) -> dict:
+                       pf: ProForma | None = None,
+                       level: int | None = None) -> dict:
     """A projected income statement, balance sheet or statement of cash
     flows, built by the ordinary `reports.py` builders over a pro-forma
-    ledger. Pass `pf` to reuse one projection across several statements."""
+    ledger. Pass `pf` to reuse one projection across several statements.
+    `level` rolls up the income statement's account lines."""
     kind = STATEMENT_KINDS.get(kind, kind)
     if kind not in STATEMENT_ORDER:
         raise BeansError(f"unknown statement: {kind!r}")
+    if level is not None and kind != "is":
+        raise BeansError("--level rolls up income and expense accounts: use "
+                         "it with the summary or the income statement, not "
+                         "the balance sheet or cash flows")
     if pf is None:
         pf = proforma.project(led, months=months, method=method,
                               lookback=lookback, use_budget=use_budget,
@@ -232,7 +268,7 @@ def forecast_statement(led: Ledger, kind: str, months: int = 6,
              f"{pf.window_end.isoformat()} (projected)")
     if kind == "is":
         data = reports.income_statement(pf, pf.window_start, pf.window_end,
-                                        label)
+                                        label, level=level)
         data["title"] = "PROJECTED INCOME STATEMENT"
     elif kind == "bs":
         data = reports.balance_sheet(pf, pf.window_end, classified=classified)
@@ -281,8 +317,11 @@ def render_forecast_statement(data: dict, decimals: int, symbol: str) -> str:
 def forecast_statements(led: Ledger, months: int = 6,
                         method: str = "average", lookback: int = 6,
                         use_budget: bool = False, use_recurring: bool = False,
-                        classified: bool = True) -> dict:
-    """All three statements off one projection."""
+                        classified: bool = True,
+                        level: int | None = None) -> dict:
+    """All three statements off one projection. `level` rolls up the
+    income statement; the balance sheet and cash flows print in full."""
+    reports.check_level(level)
     pf = proforma.project(led, months=months, method=method,
                           lookback=lookback, use_budget=use_budget,
                           use_recurring=use_recurring)
@@ -290,7 +329,8 @@ def forecast_statements(led: Ledger, months: int = 6,
         "report": "forecast_statements",
         "horizon_months": months,
         "statements": [
-            forecast_statement(led, kind, classified=classified, pf=pf)
+            forecast_statement(led, kind, classified=classified, pf=pf,
+                               level=level if kind == "is" else None)
             for kind in STATEMENT_ORDER
         ],
     }

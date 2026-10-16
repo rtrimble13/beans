@@ -487,12 +487,34 @@ beans report {income|balance|cashflow|trial} ...
 ### `report income` (alias `is`)
 
 ```
-beans report income [--period SPEC | --from/--to] [--compare] [--json]
+beans report income [--period SPEC | --from/--to] [--compare] [--level N]
+                    [--json]
 ```
 
 The income statement, with each line shown as a percent of total income
 (common-size view). `--compare` adds a column comparing against the prior
 period of equal length.
+
+`--level N` rolls the statement up to the first `N` segments of each
+account name, summing the accounts below into them:
+
+| `--level` | Shows | e.g. |
+|---|---|---|
+| `1` | Total Income, Total Expenses and Net Income only | — |
+| `2` | one level below each section | `Expenses:Activities`, `Income:Salary` |
+| `3` | one level further | `Expenses:Activities:Music Lessons` |
+| *(omitted)* | every account in full (the default) | |
+
+```sh
+beans report is --period 2026-09 --level 2   # category subtotals
+beans report is --period ytd --level 1       # the three lines that matter
+```
+
+The totals are identical at every level; only the lines above them change.
+An account shallower than `N` is shown as it is, and a rolled-up line that
+nets to zero is omitted, as a zero account is. `--json` returns the
+rolled-up lines (keyed `Expenses:Activities`) and echoes `"level"`, which
+is `null` for the full statement.
 
 ### `report balance` (alias `bs`)
 
@@ -781,7 +803,8 @@ period you ask for.
 ```
 beans forecast [--months N] [--method {average,trend}] [--lookback N]
                [--use-budget] [--use-recurring]
-               [--report {summary,is,bs,cf,all}] [--flat] [--json]
+               [--report {summary,is,bs,cf,all}] [--flat] [--level N]
+               [--json]
 ```
 
 | Flag | Description |
@@ -793,6 +816,7 @@ beans forecast [--months N] [--method {average,trend}] [--lookback N]
 | `--use-recurring` | Project scheduled recurring transactions at their exact amounts and dates. Takes priority over budgets and history for those accounts. |
 | `--report WHICH` | `summary` (default), or a full financial statement: `income`/`is`, `balance`/`bs`, `cashflow`/`cf`, or `all`. |
 | `--flat` | With `--report bs`, drop the current vs non-current split. |
+| `--level N` | Roll income and expense accounts up to `N` segments of name, as `report income --level` does: the summary's projection drivers and the projected income statement (alone or in `--report all`). `1` leaves only the totals. Refused with `--report bs` or `cf`. |
 | `--json` | Machine-readable output. |
 
 The default `summary` projects income, expenses, net savings, cash
@@ -807,6 +831,7 @@ budget > history.**
 beans forecast -n 1  --report bs     # the balance sheet one month out
 beans forecast -n 12 --report is     # the next twelve months' income
 beans forecast -n 6  --report all    # all three, off one projection
+beans forecast -n 12 --report is --level 2   # next year's income, by category
 ```
 
 `--report` prints a **projected** income statement, balance sheet or
