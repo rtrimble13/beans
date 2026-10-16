@@ -6,6 +6,7 @@ from beans import reports
 from beans.analysis import analyze
 from beans.budget import budget_report
 from beans.models import AccountType
+from beans.render import rollup
 from beans.utils import BeansError
 from tests.conftest import post
 
@@ -563,3 +564,90 @@ def test_income_statement_level_survives_json(led):
     # A level is a count of name segments, not money.
     assert out["level"] == 2
     assert out["expenses"]["Expenses:Activities"] == "2248.00"
+
+
+# -- a parent account with postings of its own -------------------------------
+
+
+def amount_lines(text: str, section: str, total: str) -> list[str]:
+    """The amount column of `section`'s lines, between its heading and the
+    `total` line: what a reader adds up to check the total."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if line.strip() == section)
+    end = next(i for i, line in enumerate(lines)
+               if i > start and line.strip().startswith(total))
+    return [line.split()[-1] if "%" not in line else line.split()[-2]
+            for line in lines[start + 1:end]
+            if line.strip() and not line.startswith("-")
+            and any(ch.isdigit() for ch in line)]
+
+
+def test_rollup_gives_a_parent_balance_its_own_line():
+    amounts = {"Expenses:Food": 100, "Expenses:Food:Groceries": 200,
+               "Expenses:Health": 50}
+    assert rollup(amounts) == [
+        ("Expenses", 0, 350, False),
+        ("Food", 1, 300, False),
+        ("Food (direct)", 2, 100, True),
+        ("Groceries", 2, 200, True),
+        ("Health", 1, 50, True),
+    ]
+
+
+def test_rollup_without_parent_postings_is_unchanged():
+    rows = rollup({"Expenses:Food:Groceries": 200, "Expenses:Health": 50})
+    assert not any("(direct)" in name for name, *_ in rows)
+    # Only accounts that were posted to are leaves; headers carry no line.
+    assert [(name, leaf) for name, _, _, leaf in rows] == [
+        ("Expenses", False), ("Food", False), ("Groceries", True),
+        ("Health", True)]
+
+
+def test_income_statement_shows_a_parent_accounts_own_spending(led):
+    led.add_account("Expenses:Food", AccountType.EXPENSE)
+    post(led, date(2026, 9, 1), "paycheck",
+         ("Assets:Checking", 100000), ("Income:Salary", -100000))
+    post(led, date(2026, 9, 2), "market",
+         ("Expenses:Food", 10000), ("Assets:Checking", -10000))
+    post(led, date(2026, 9, 3), "groceries",
+         ("Expenses:Food:Groceries", 20000), ("Assets:Checking", -20000))
+    data = reports.income_statement(
+        led, date(2026, 9, 1), date(2026, 9, 30), "September 2026")
+    text = reports.render_income_statement(data, 2, "$")
+    assert "Food (direct)" in text
+    # The visible lines add up to the total printed under them.
+    assert amount_lines(text, "Expenses", "Total Expenses") == \
+        ["100.00", "200.00"]
+    assert data["total_expenses"] == 30000
+    # Rolled up, the parent's own spending joins its sub-accounts' in one
+    # line, and there is nothing left to show separately.
+    rolled = reports.render_income_statement(
+        reports.income_statement(led, date(2026, 9, 1), date(2026, 9, 30),
+                                 "September 2026", level=2), 2, "$")
+    assert "(direct)" not in rolled
+    assert amount_lines(rolled, "Expenses", "Total Expenses") == ["300.00"]
+
+
+def test_flat_balance_sheet_shows_a_parent_accounts_own_balance(led):
+    led.add_account("Assets:Investments", AccountType.ASSET,
+                    liquidity="noncurrent")
+    post(led, date(2026, 1, 1), "opening",
+         ("Assets:Checking", 100000), ("Equity:Opening Balances", -100000))
+    post(led, date(2026, 1, 2), "unsorted holding",
+         ("Assets:Investments", 30000), ("Assets:Checking", -30000))
+    post(led, date(2026, 1, 3), "brokerage",
+         ("Assets:Investments:Brokerage", 20000),
+         ("Assets:Checking", -20000))
+    for classified in (True, False):
+        data = reports.balance_sheet(led, date(2026, 1, 31),
+                                     classified=classified)
+        text = reports.render_balance_sheet(data, 2, "$")
+        assert "Investments (direct)" in text
+        assert "300.00" in text
+        assert data["balanced"] is True
+    flat = reports.render_balance_sheet(
+        reports.balance_sheet(led, date(2026, 1, 31), classified=False),
+        2, "$")
+    assert amount_lines(flat, "Assets", "Total Assets") == \
+        ["500.00", "300.00", "200.00"]

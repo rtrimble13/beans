@@ -115,22 +115,30 @@ def rollup(amounts: dict[str, int]) -> list[tuple[str, int, int, bool]]:
     Returns (name, depth, amount, is_leaf) rows in tree order, where
     non-leaf rows carry the subtotal of their descendants (plus any
     balance posted directly to the parent account itself).
+
+    A parent account with a balance of its own gets an extra leaf row,
+    `<name> (direct)`, as its first child. Statements print amounts on
+    leaf rows only, so without it that balance would be on no line, and
+    the lines would not add up to the total printed under them.
     """
     totals: dict[tuple[str, ...], int] = {}
-    leaves = set()
+    posted = set()
     for name, amount in amounts.items():
         parts = tuple(name.split(":"))
-        leaves.add(parts)
+        posted.add(parts)
         for depth in range(1, len(parts) + 1):
             key = parts[:depth]
             totals[key] = totals.get(key, 0) + amount
 
     rows = []
     for key in sorted(totals, key=lambda k: tuple(p.lower() for p in k)):
-        is_leaf = key in leaves and not any(
+        is_leaf = key in posted and not any(
             other != key and other[: len(key)] == key for other in totals
         )
         rows.append((key[-1], len(key) - 1, totals[key], is_leaf))
+        if key in posted and not is_leaf:
+            rows.append((f"{key[-1]} (direct)", len(key),
+                         amounts[":".join(key)], True))
     return rows
 
 

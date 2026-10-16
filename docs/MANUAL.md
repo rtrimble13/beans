@@ -484,6 +484,12 @@ expense) as of a point in time.
 beans report {income|balance|cashflow|trial} ...
 ```
 
+Statements list accounts as a tree, with amounts on the innermost lines
+only, so the lines in a section add up to its total. An account that has
+sub-accounts *and* postings of its own (`Expenses:Food` beside
+`Expenses:Food:Groceries`) shows its own amount on a `Food (direct)` line
+under it.
+
 ### `report income` (alias `is`)
 
 ```
